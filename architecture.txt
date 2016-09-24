@@ -1,0 +1,55 @@
+-- BEGIN DESIGN SKETCH --
+trait MutexAlgorithm<Resource, ProcId, Message> {
+    fn request(&mut self) -> (Box<Future<Item=Resource>>, Vec<(ProcId, Message)>);
+    fn release(&mut self) -> Vec<(ProcId, Message);
+    fn handle_message(&mut self, Message) -> Vec<(ProcId, Message)>;
+}
+
+struct RaymondState<Resource, ProcId> {
+    usingResource: bool,
+    holder: ProcId,
+    requests: VecDequeue<ProcId>, // enqueue with push_back, dequeue with pop_front
+    asked: bool,
+    resolvers: Vec<Complete<Resource>>
+}
+
+enum RaymondMessage<Resource> { GrantToken(Resource), Request }
+-- END DESIGN SKETCH --
+
+It looks like futures::oneshot (http://alexcrichton.com/futures-rs/futures/fn.oneshot.html) is exactly what I was looking for to tie the parts together. The idea is that RaymondState's implementation of MutexAlgorithm::request would use oneshot to create a (Complete, Oneshot) pair, store the Oneshot (receiver) in the return value, and store the Complete (sender) in RaymondState::resolvers. There's a decent-looking tutorial on futures/tokio at https://github.com/alexcrichton/futures-rs/blob/master/TUTORIAL.md (I'm in the process of reading it).
+
+Resource would be templated as String to store files, and as HashSet<String> to store file metadata (potentially, see 5d).
+
+Detailed breakdown of the work:
+1. Python automation for infrastucture
+1a. The python script takes a provided tree.txt (filename via argv?)
+1b. Spins up some AWS instances for each pid (AWS creds via env var?)
+1c. Pushes a {(pid, ipaddr, port) configuration file (nodes.txt?), copy of the tree.txt}
+1d. Pushes the rust binary (compiled locally?) to each node, and runs it (inside screen/tmux?), passing its pid as an argument.
+1e. Potentially have a variant of this python script that runs it locally (ipaddr=localhost, different ports). (nodes.txt can specify localhost, and use port=9000+pid). Maybe do this one first?
+
+2. The rust program parses its arguments/reads the config files from the arguments
+2a. pid is a required first argument
+2b. tree.txt is the default, but "--tree-file=foo" overrides (I don't think we need this, but it's trivial to implement and can't hurt)
+2c. nodes.txt is the default, but "--nodes-file=bar" overrides (this is important for the local version of the python script).
+
+3. The networking part of the rust program
+3a. The rust program starts up a tokio_core::TcpListener on the ports specified in nodes.txt, to respond to messages
+3b. In order to send a message, it spawns a new tokio_core::TcpStream to the destination pid (it should be straightforward to cache connections in a HashMap<Pid, TcpStream> to avoid creating too many)
+3c. When it receives a message, it uses serde to deserialize it into a RaymondMessage, which it then passes to the pure logical implementation's handle_message
+3d. Consider storing filename in the messages, to know which one to call handle_message on?
+
+4. The raymond's algorithm part of the rust program
+4a. Instantiate MutexAlgorithm for RaymondState in a "pure" way, as specified in the DESIGN SKETCH
+4b. request/release will be called by the CLI (part 5), and return a Vec of messages to send via 3b
+4c. handle_message will be called by 3c on every incoming message, and likewise returns a Vec of messages for 3b
+
+5. The CLI part of the rust program
+5a. This will use nom to parse user input. It looks like nom has a fancy thing that autogenerates error messages from the grammar: http://rust.unhandledexpression.com/src/nom/src/util.rs.html#357-366
+5b. This needs to support {create, delete, read, append}
+5c. Each node should probably have a HashMap<String, RaymondState<String>>, where the keys are filenames and the values are tokens that represent access to the contents
+5d. Possibly also have a RaymondState<HashSet<String>> to keep track of filenames? (so that create/delete can do the metadata independently of the file contents, to reduce contention? all 4 need commands need to check existence, so it might not be a perf win, but this is probably the cleanest way to track existence)
+5e. {create, delete} call .request on the metadata, .request on the file (how do other nodes handle requests to a nonexistant file? maybe there shouldn't be Raymond-managed metadata, and there's a locally-correct way to handle that? this needs more thought)
+5f. depending on how the metadata is resolved, {read, append} might be able to .request the data without locking the metadata
+5g. all of these .request's will return a future that allows access to the resource, these will call .release when they're done
+5h. all the Vecs of messages returned from MutexAlgorithm's methods will be sent by 3b
