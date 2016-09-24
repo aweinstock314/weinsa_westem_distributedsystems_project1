@@ -8,15 +8,18 @@ use futures::Future;
 use nom::IResult;
 use std::collections::HashMap;
 use std::error::Error;
-use std::io::prelude::*;
-use std::str;
 use std::fs::File;
 use std::io::BufReader;
+use std::io::prelude::*;
+use std::net::{IpAddr, SocketAddr};
+use std::str;
+use std::str::FromStr;
 use tokio_core::io::read_to_end;
 use tokio_core::net::TcpStream;
 
 type Pid = usize;
 type Topology = Vec<(Pid, Pid)>;
+type Nodes = HashMap<Pid, SocketAddr>;
 type Peers = HashMap<Pid, TcpStream>;
 
 named!(parse_usize<&[u8], usize>, map_res!(map_res!(nom::digit, str::from_utf8), str::FromStr::from_str));
@@ -25,6 +28,19 @@ fn parse_tree(input: &[u8]) -> IResult<&[u8], Topology> {
     named!(line<&[u8], (Pid, Pid)>, chain!(tag!("(") ~ src: parse_usize ~ tag!(",") ~ dst: parse_usize ~ tag!(")"), || (src, dst)));
     named!(tree<&[u8], Topology>, separated_list!(is_a!("\r\n"), line));
     tree(input)
+}
+
+fn parse_nodes(input: &[u8]) -> IResult<&[u8], Nodes> {
+    named!(quoted_string<&[u8], &[u8]>, chain!(tag!("\"") ~ s: is_not!("\"\r\n") ~ tag!("\""), || s));
+    named!(quoted_ip<&[u8], IpAddr>, map_res!(map_res!(quoted_string, str::from_utf8), IpAddr::from_str));
+    named!(node<&[u8], (Pid, SocketAddr)>, chain!(tag!("(") ~
+        pid: parse_usize ~ tag!(",") ~
+        ip: quoted_ip ~ tag!(",") ~
+        port: parse_usize ~ tag!(")"),
+        || { (pid, SocketAddr::new(ip, port as u16)) }));
+    named!(nodes<&[u8], Vec<(Pid, SocketAddr)> >, separated_list!(is_a!("\r\n"), node));
+
+    nodes(input).map(|nodes: Vec<(Pid, SocketAddr)>| { nodes.into_iter().collect::<Nodes>() })
 }
 
 // Can't get the types to line up right, too general for now
@@ -65,7 +81,8 @@ fn main() {
         ap.parse_args_or_exit();
     }
     println!("{}, {}, {}", pid, tree_fname, nodes_fname);
-    let topology = run_parser_on_file(&tree_fname, parse_tree);
+    let topology = run_parser_on_file(&tree_fname, parse_tree).expect(&format!("Couldn't parse {}", tree_fname));
     println!("topology: {:?}", topology);
-
+    let nodes = run_parser_on_file(&nodes_fname, parse_nodes).expect(&format!("Couldn't parse {}", nodes_fname));
+    println!("nodes: {:?}", nodes);
 }
