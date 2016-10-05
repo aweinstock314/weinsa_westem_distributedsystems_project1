@@ -5,6 +5,7 @@ extern crate tokio_core;
 
 use argparse::{ArgumentParser, Store};
 use futures::Future;
+use futures::stream::Stream;
 use nom::IResult;
 use std::collections::HashMap;
 use std::error::Error;
@@ -14,8 +15,9 @@ use std::io::prelude::*;
 use std::net::{IpAddr, SocketAddr};
 use std::str;
 use std::str::FromStr;
-use tokio_core::io::read_to_end;
-use tokio_core::net::TcpStream;
+use tokio_core::io::{read_to_end, write_all};
+use tokio_core::net::{TcpListener, TcpStream};
+use tokio_core::reactor::Core;
 
 type Pid = usize;
 type Topology = Vec<(Pid, Pid)>;
@@ -85,4 +87,17 @@ fn main() {
     println!("topology: {:?}", topology);
     let nodes = run_parser_on_file(&nodes_fname, parse_nodes).expect(&format!("Couldn't parse {}", nodes_fname));
     println!("nodes: {:?}", nodes);
+    let own_addr = nodes.get(&pid).expect(&format!("Couldn't find an entry for pid {} in {} ({:?})", pid, nodes_fname, nodes));
+    println!("own_addr: {:?}", own_addr);
+
+    let mut core = Core::new().expect("Failed to initialize event loop.");
+    let listener = TcpListener::bind(&own_addr, &core.handle()).expect("Failed to bind listener.");
+    let server = {
+        let handle = core.handle();
+        listener.incoming().for_each(move |(sock, addr)| {
+            handle.spawn(write_all(sock, b"Hello, world!\n").map(|_| ()).map_err(|_| ()));
+            Ok(())
+        })
+    };
+    core.run(server).expect("Failed to run event loop.");
 }
