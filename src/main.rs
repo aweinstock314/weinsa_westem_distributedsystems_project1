@@ -8,7 +8,7 @@ extern crate futures;
 extern crate tokio_core;
 
 use argparse::{ArgumentParser, Store};
-use byteorder::{LittleEndian, ReadBytesExt};
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use futures::stream::Stream;
 use futures::{Async, Future, Poll};
 use nom::IResult;
@@ -22,7 +22,7 @@ use std::mem;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::str;
-use tokio_core::io::{read_to_end, write_all, FramedIo, Io, ReadHalf, WriteAll, WriteHalf};
+use tokio_core::io::{write_all, FramedIo, Io};
 use tokio_core::net::{TcpListener, TcpStream};
 use tokio_core::reactor::Core;
 
@@ -122,22 +122,22 @@ struct LengthPrefixedFramerState {
     buf: Vec<u8>,
 }
 struct LengthPrefixedFramer<I> {
-    reader: ReadHalf<I>,
+    underlying: I,
     readstate: Option<LengthPrefixedFramerState>,
-    writer: Result<WriteHalf<I>, WriteAll<WriteHalf<I>, Vec<u8>>>, // Result is used here as Either
+    writestate: Option<LengthPrefixedFramerState>,
 }
 
 impl<I: Io> FramedIo for LengthPrefixedFramer<I> {
     type In = Vec<u8>;
     type Out = Vec<u8>;
     fn poll_read(&mut self) -> Async<()> {
-        self.reader.poll_read()
+        self.underlying.poll_read()
     }
     fn read(&mut self) -> Poll<Self::Out, io::Error> {
         let mut tmp = mem::replace(&mut self.readstate, None);
         let mut restore = false; // borrow checker workaround
         if let Some(ref mut st) = tmp {
-            let newbytes = try!(self.reader.read(&mut st.buf[st.sofar..]));
+            let newbytes = try!(self.underlying.read(&mut st.buf[st.sofar..]));
             st.sofar += newbytes;
             if st.sofar == st.buf.len() {
                 return Ok(Async::Ready(mem::replace(&mut st.buf, Vec::new())))
@@ -145,7 +145,7 @@ impl<I: Io> FramedIo for LengthPrefixedFramer<I> {
                 restore = true;
             }
         } else {
-            let size = try!(self.reader.read_u64::<LittleEndian>()) as usize;
+            let size = try!(self.underlying.read_u64::<LittleEndian>()) as usize;
             self.readstate = Some(LengthPrefixedFramerState {
                 sofar: 0,
                 buf: vec![0u8; size],
@@ -158,21 +158,35 @@ impl<I: Io> FramedIo for LengthPrefixedFramer<I> {
         Ok(Async::NotReady)
     }
     fn poll_write(&mut self) -> Async<()> {
-        match self.writer {
-            Ok(w) => w.poll_write(),
-            Err(w) => w.poll().map(|_| ()),
-        }
+        self.underlying.poll_write()
     }
     fn write(&mut self, req: Self::In) -> Poll<(), io::Error> {
-        unimplemented!();
+        let mut tmp = mem::replace(&mut self.writestate, None);
+        let mut restore = false; // borrow checker workaround
+        if let Some(ref mut st) = tmp {
+            let newbytes = try!(self.underlying.write(&mut st.buf[st.sofar..]));
+            st.sofar += newbytes;
+            if st.sofar == st.buf.len() {
+                // didn't handle the current request, ask the caller to try again
+                return Ok(Async::NotReady);
+            } else {
+                restore = true;
+            }
+        } else {
+            try!(self.underlying.write_u64::<LittleEndian>(req.len() as u64));
+            self.writestate = Some(LengthPrefixedFramerState {
+                sofar: 0,
+                buf: req,
+            });
+            return Ok(Async::Ready(()));
+        }
+        if restore {
+            self.writestate = tmp;
+        }
+        Ok(Async::NotReady)
     }
     fn flush(&mut self) -> Poll<(), io::Error> {
-        if let Ok(w) = self.writer {
-            w.flush().map(Async::Ready)
-        } else {
-            // flushing the WriteAll isn't possible
-            Ok(Async::Ready(()))
-        }
+        self.underlying.flush().map(Async::Ready)
     }
 }
 
