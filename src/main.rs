@@ -7,7 +7,7 @@ use argparse::{ArgumentParser, Store};
 use futures::Future;
 use futures::stream::Stream;
 use nom::IResult;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::fs::File;
 use std::io::BufReader;
@@ -65,6 +65,34 @@ fn run_parser_on_file<A, F: Fn(&[u8]) -> IResult<&[u8], A>>(filename: &str, pars
         IResult::Done(_, o) => Ok(o),
         IResult::Error(_) => Err("Parse error".into()),
         IResult::Incomplete(_) => Err("Incomplete parse".into()),
+    }
+}
+
+trait MutexAlgorithm<Resource, Message, E> {
+    fn request(&mut self) -> (Box<Future<Item=Resource, Error=E>>, Vec<(Pid, Message)>);
+    fn release(&mut self) -> Vec<(Pid, Message)>;
+    fn handle_message(&mut self, Message) -> Vec<(Pid, Message)>;
+}
+
+struct RaymondState<Resource> {
+    usingResource: bool,
+    holder: Pid,
+    requests: VecDeque<Pid>, // enqueue with push_back, dequeue with pop_front
+    asked: bool,
+    resolvers: Vec<futures::Complete<Resource>>
+}
+
+enum RaymondMessage<Resource> { GrantToken(Resource), Request }
+
+impl<Resource> MutexAlgorithm<Resource, RaymondMessage<Resource>, ()> for RaymondState<Resource> {
+    fn request(&mut self) -> (Box<Future<Item=Resource, Error=()>>, Vec<(Pid, RaymondMessage<Resource>)>) {
+        unimplemented!();
+    }
+    fn release(&mut self) -> Vec<(Pid, RaymondMessage<Resource>)> {
+        unimplemented!();
+    }
+    fn handle_message(&mut self, msg: RaymondMessage<Resource>) -> Vec<(Pid, RaymondMessage<Resource>)> {
+        unimplemented!();
     }
 }
 
