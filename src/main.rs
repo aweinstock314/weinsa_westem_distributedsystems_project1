@@ -1,21 +1,28 @@
+#![feature(rustc_macro)]
 extern crate argparse;
+extern crate bincode;
+extern crate byteorder;
 extern crate futures;
 #[macro_use] extern crate nom;
+#[macro_use] extern crate serde_derive;
 extern crate tokio_core;
 
 use argparse::{ArgumentParser, Store};
-use futures::Future;
+use byteorder::{LittleEndian, ReadBytesExt};
 use futures::stream::Stream;
+use futures::{Async, Future, Poll};
 use nom::IResult;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::prelude::*;
+use std::io;
+use std::mem;
 use std::net::{IpAddr, SocketAddr};
-use std::str;
 use std::str::FromStr;
-use tokio_core::io::{read_to_end, write_all};
+use std::str;
+use tokio_core::io::{read_to_end, write_all, FramedIo, Io, ReadHalf, WriteAll, WriteHalf};
 use tokio_core::net::{TcpListener, TcpStream};
 use tokio_core::reactor::Core;
 
@@ -75,13 +82,14 @@ trait MutexAlgorithm<Resource, Message, E> {
 }
 
 struct RaymondState<Resource> {
-    usingResource: bool,
+    using_resource: bool,
     holder: Pid,
     requests: VecDeque<Pid>, // enqueue with push_back, dequeue with pop_front
     asked: bool,
     resolvers: Vec<futures::Complete<Resource>>
 }
 
+#[derive(Serialize, Deserialize)]
 enum RaymondMessage<Resource> { GrantToken(Resource), Request }
 
 impl<Resource> MutexAlgorithm<Resource, RaymondMessage<Resource>, ()> for RaymondState<Resource> {
@@ -95,6 +103,98 @@ impl<Resource> MutexAlgorithm<Resource, RaymondMessage<Resource>, ()> for Raymon
         unimplemented!();
     }
 }
+
+#[derive(Serialize, Deserialize)]
+struct ApplicationMessage {
+    fname: String,
+    ty: ApplicationMessageType,
+}
+
+#[derive(Serialize, Deserialize)]
+enum ApplicationMessageType {
+    CreateFile,
+    Raymond(RaymondMessage<String>),
+    DeleteFile, // should only be issued after a lock is held
+}
+
+struct LengthPrefixedFramerState {
+    sofar: usize,
+    buf: Vec<u8>,
+}
+struct LengthPrefixedFramer<I> {
+    reader: ReadHalf<I>,
+    readstate: Option<LengthPrefixedFramerState>,
+    writer: Result<WriteHalf<I>, WriteAll<WriteHalf<I>, Vec<u8>>>, // Result is used here as Either
+}
+
+impl<I: Io> FramedIo for LengthPrefixedFramer<I> {
+    type In = Vec<u8>;
+    type Out = Vec<u8>;
+    fn poll_read(&mut self) -> Async<()> {
+        self.reader.poll_read()
+    }
+    fn read(&mut self) -> Poll<Self::Out, io::Error> {
+        let mut tmp = mem::replace(&mut self.readstate, None);
+        let mut restore = false; // borrow checker workaround
+        if let Some(ref mut st) = tmp {
+            let newbytes = try!(self.reader.read(&mut st.buf[st.sofar..]));
+            st.sofar += newbytes;
+            if st.sofar == st.buf.len() {
+                return Ok(Async::Ready(mem::replace(&mut st.buf, Vec::new())))
+            } else {
+                restore = true;
+            }
+        } else {
+            let size = try!(self.reader.read_u64::<LittleEndian>()) as usize;
+            self.readstate = Some(LengthPrefixedFramerState {
+                sofar: 0,
+                buf: vec![0u8; size],
+            });
+            return Ok(Async::NotReady);
+        }
+        if restore {
+            self.readstate = tmp;
+        }
+        Ok(Async::NotReady)
+    }
+    fn poll_write(&mut self) -> Async<()> {
+        match self.writer {
+            Ok(w) => w.poll_write(),
+            Err(w) => w.poll().map(|_| ()),
+        }
+    }
+    fn write(&mut self, req: Self::In) -> Poll<(), io::Error> {
+        unimplemented!();
+    }
+    fn flush(&mut self) -> Poll<(), io::Error> {
+        if let Ok(w) = self.writer {
+            w.flush().map(Async::Ready)
+        } else {
+            // flushing the WriteAll isn't possible
+            Ok(Async::Ready(()))
+        }
+    }
+}
+
+// TODO: implement in terms of LengthPrefixedFramer and bincode
+/*struct ApplicationMessageIoFramer(TcpStream, Vec<u8>);
+
+impl FramedIo for ApplicationMessageIoFramer {
+    type In = ApplicationMessageType;
+    type Out = ApplicationMessageType;
+    fn poll_read(&mut self) -> Async<()> {
+        self.0.poll_read()
+    }
+    fn read(&mut self) -> Poll<Self::Out, io::Error> {
+    }
+    fn poll_write(&mut self) -> Async<()> {
+        self.0.poll_write()
+    }
+    fn write(&mut self, req: Self::In) -> Poll<(), io::Error>;
+    fn flush(&mut self) -> Poll<(), Error> {
+        self.0.flush().map(Asynch::Ready)
+    }
+}*/
 
 fn main() {
     let mut pid: Pid = 0;
