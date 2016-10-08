@@ -2,7 +2,7 @@
 extern crate argparse;
 extern crate bincode;
 extern crate byteorder;
-extern crate futures;
+#[macro_use] extern crate futures;
 #[macro_use] extern crate nom;
 #[macro_use] extern crate serde_derive;
 extern crate tokio_core;
@@ -190,8 +190,7 @@ impl<I: Io> FramedIo for LengthPrefixedFramer<I> {
     }
 }
 
-// TODO: implement in terms of LengthPrefixedFramer and bincode
-/*struct ApplicationMessageIoFramer(TcpStream, Vec<u8>);
+struct ApplicationMessageIoFramer(LengthPrefixedFramer<TcpStream>);
 
 impl FramedIo for ApplicationMessageIoFramer {
     type In = ApplicationMessageType;
@@ -200,15 +199,23 @@ impl FramedIo for ApplicationMessageIoFramer {
         self.0.poll_read()
     }
     fn read(&mut self) -> Poll<Self::Out, io::Error> {
+        let buf = try_ready!(self.0.read());
+        bincode::serde::deserialize(&buf)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+            .map(|r| Async::Ready(r))
     }
     fn poll_write(&mut self) -> Async<()> {
         self.0.poll_write()
     }
-    fn write(&mut self, req: Self::In) -> Poll<(), io::Error>;
-    fn flush(&mut self) -> Poll<(), Error> {
-        self.0.flush().map(Asynch::Ready)
+    fn write(&mut self, req: Self::In) -> Poll<(), io::Error> {
+        let buf = try!(bincode::serde::serialize(&req, bincode::SizeLimit::Infinite)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e)));
+        self.0.write(buf)
     }
-}*/
+    fn flush(&mut self) -> Poll<(), io::Error> {
+        self.0.flush()
+    }
+}
 
 fn main() {
     let mut pid: Pid = 0;
