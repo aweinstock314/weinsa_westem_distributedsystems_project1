@@ -306,32 +306,17 @@ impl FramedIo for ApplicationMessageWriter {
     }
 }
 
-// Abandoned as too generic (hitting E0296 even after some type tetris)
-/*struct ReadFrame<I>(I);
-impl<I: FramedIo<In=In, Out=Out2>, In, Out2> Future<Item=(ReadFrame<I>, <I as FramedIo>::Out), Error=io::Error> for ReadFrame<I> {
-    fn poll(&mut self) -> Poll<(ReadFrame<I>, Out2), io::Error> {
-        try_ready!(self.0.poll_read());
-        self.0.read()
-    }
-}
-trait FramedIoExt: FramedIo {
-    fn read_frame(self) -> Box<Future<Item=(Self, Self::Out), Error=io::Error>> where Self: Sized {
-        Box::new(ReadFrame(self))
-    }
-    fn write_frame(self, Self::In) -> Box<Future<Item=Self, Error=io::Error>>;
-}*/
-
-struct ReadFrameFuture(Option<ApplicationMessageReader>);
-impl Future for ReadFrameFuture {
-    type Item = (ApplicationMessageReader, ApplicationMessageType);
+struct ReadFrame<I>(Option<I>);
+impl<I: FramedIo<In=In, Out=Out>, In, Out> Future for ReadFrame<I> {
+    type Item = (ReadFrame<I>, Out);
     type Error = io::Error;
-    fn poll(&mut self) -> Poll<(ApplicationMessageReader, ApplicationMessageType), io::Error> {
+    fn poll(&mut self) -> Poll<(ReadFrame<I>, Out), io::Error> {
         let oldself = mem::replace(&mut self.0, None);
         let (res, newself) = if let Some(mut amr) = oldself {
             if let Async::NotReady = amr.poll_read() {
                 (Ok(Async::NotReady), Some(amr))
             } else { match amr.read() {
-                Ok(Async::Ready(x)) => (Ok(Async::Ready((amr, x))), None),
+                Ok(Async::Ready(x)) => (Ok(Async::Ready((ReadFrame(Some(amr)), x))), None),
                 Ok(Async::NotReady) => (Ok(Async::NotReady), Some(amr)),
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => (Ok(Async::NotReady), Some(amr)),
                 Err(e) => (Err(e), None),
@@ -343,7 +328,15 @@ impl Future for ReadFrameFuture {
         res
     }
 }
-// TODO: WriteFrameFuture
+// TODO: WriteFrame
+
+/*trait FramedIoExt: FramedIo {
+    fn read_frame(self) -> Box<Future<Item=(Self, Self::Out), Error=io::Error>> where Self: Sized {
+        Box::new(ReadFrame(self))
+    }
+    fn write_frame(self, Self::In) -> Box<Future<Item=Self, Error=io::Error>>;
+}*/
+
 
 fn get_neighbors(topology: &Topology, pid: Pid) -> HashSet<Pid> {
     topology.iter()
@@ -399,7 +392,7 @@ fn main() {
                         futures::finished(sock.split())
                     });
                     let todo = rw.and_then(move |(r, w)| {
-                        let rff = ReadFrameFuture(Some(ApplicationMessageReader(LengthPrefixedReader::new(r))));
+                        let rff = ReadFrame(Some(ApplicationMessageReader(LengthPrefixedReader::new(r))));
                         let read = rff.and_then(move |(_, msg)| {
                             println!("received msg {:?} from {}", msg, peer_pid);
                             Ok(())
