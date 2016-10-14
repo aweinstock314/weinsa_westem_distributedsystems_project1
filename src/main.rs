@@ -9,6 +9,7 @@ extern crate serde_json;
 extern crate tokio_core;
 
 use argparse::{ArgumentParser, Store};
+use bincode::SizeLimit;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use futures::stream::Stream;
 use futures::{Async, Future, Poll};
@@ -134,12 +135,14 @@ struct LengthPrefixedFramer<I> {
 struct LengthPrefixedReader<I> {
     underlying: ReadHalf<I>,
     readstate: Option<LengthPrefixedFramerState>,
+    sizebound: SizeLimit,
 }
 impl<I> LengthPrefixedReader<I> {
-    fn new(i: ReadHalf<I>) -> Self {
+    fn new(i: ReadHalf<I>, bound: SizeLimit) -> Self {
         LengthPrefixedReader {
             underlying: i,
             readstate: None,
+            sizebound: bound,
         }
     }
 }
@@ -178,6 +181,12 @@ impl<I: Io> FramedIo for LengthPrefixedReader<I> {
             }
         } else {
             let size = try!(self.underlying.read_u64::<LittleEndian>()) as usize;
+            if let SizeLimit::Bounded(maxsize) = self.sizebound {
+                if size >= maxsize as usize {
+                    println!("warning: in LengthPrefixedReader, received an input of size {} (bound is {:?})", size, self.sizebound);
+                    return Err(io::Error::new(io::ErrorKind::Other, "LengthPrefixedReader: bound exceeded"));
+                }
+            }
             self.readstate = Some(LengthPrefixedFramerState {
                 sofar: 0,
                 buf: vec![0u8; size],
@@ -439,7 +448,7 @@ fn main() {
                         futures::finished(sock.split())
                     });
                     let todo = rw.and_then(move |(r, w)| {
-                        let rff = ReadFrame(Some(ApplicationMessageReader(LengthPrefixedReader::new(r))));
+                        let rff = ReadFrame(Some(ApplicationMessageReader(LengthPrefixedReader::new(r, SizeLimit::Bounded(0x10000)))));
                         let read = rff.and_then(move |(_, msg)| {
                             println!("received msg {:?} from {}", msg, peer_pid);
                             Ok(())
