@@ -5,6 +5,7 @@ extern crate byteorder;
 #[macro_use] extern crate futures;
 #[macro_use] extern crate nom;
 #[macro_use] extern crate serde_derive;
+extern crate serde_json;
 extern crate tokio_core;
 
 use argparse::{ArgumentParser, Store};
@@ -217,24 +218,25 @@ impl<I: Io> FramedIo for LengthPrefixedWriter<I> {
         let mut tmp = mem::replace(&mut self.writestate, None);
         let (restore, result); // borrow checker workaround
         if let Some(ref mut st) = tmp {
-            let newbytes = try!(self.underlying.write(&mut st.buf[st.sofar..]));
+            // if we're in the middle of a write, do that before starting the new request
+            let newbytes = try!(self.underlying.write(&st.buf[st.sofar..]));
+            st.sofar += newbytes;
+            restore = if st.sofar == st.buf.len() { false } else { true };
+            result = Ok(Async::NotReady);
+        } else {
+            // if we aren't busy, start the write
+            try!(self.underlying.write_u64::<LittleEndian>(req.len() as u64));
+            let mut st = LengthPrefixedFramerState { sofar: 0, buf: req, };
+            let newbytes = try!(self.underlying.write(&st.buf[st.sofar..]));
             st.sofar += newbytes;
             if st.sofar == st.buf.len() {
-                // didn't handle the current request, ask the caller to try again
-                restore = false;
-                result = Ok(Async::NotReady);
+                result = Ok(Async::Ready(()));
             } else {
-                restore = true;
+                // if we didn't finish the write in one shot, stash the state
+                self.writestate = Some(st);
                 result = Ok(Async::NotReady);
             }
-        } else {
-            try!(self.underlying.write_u64::<LittleEndian>(req.len() as u64));
-            self.writestate = Some(LengthPrefixedFramerState {
-                sofar: 0,
-                buf: req,
-            });
             restore = false;
-            result = Ok(Async::Ready(()));
         }
         if restore {
             self.writestate = tmp;
@@ -277,9 +279,15 @@ impl FramedIo for ApplicationMessageReader {
     }
     fn read(&mut self) -> Poll<Self::Out, io::Error> {
         let buf = try_ready!(self.0.read());
-        bincode::serde::deserialize(&buf)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-            .map(|r| Async::Ready(r))
+        if cfg!(feature="use_bincode") {
+            bincode::serde::deserialize(&buf)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+                .map(|r| Async::Ready(r))
+        } else {
+            serde_json::from_str(&String::from_utf8_lossy(&buf))
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+                .map(|r| Async::Ready(r))
+        }
     }
     fn poll_write(&mut self) -> Async<()> {
         panic!("poll_write on ApplicationMessageReader");
@@ -305,9 +313,17 @@ impl FramedIo for ApplicationMessageWriter {
         self.0.poll_write()
     }
     fn write(&mut self, req: Self::In) -> Poll<(), io::Error> {
-        let buf = try!(bincode::serde::serialize(&req, bincode::SizeLimit::Infinite)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e)));
-        self.0.write(buf)
+        if cfg!(feature="use_bincode") {
+            let buf = try!(
+                bincode::serde::serialize(&req, bincode::SizeLimit::Infinite)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e)));
+            self.0.write(buf)
+        } else {
+            let buf = try!(
+                serde_json::to_string(&req)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e)));
+            self.0.write(buf.as_bytes().into())
+        }
     }
     fn flush(&mut self) -> Poll<(), io::Error> {
         self.0.flush()
