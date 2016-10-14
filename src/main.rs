@@ -89,7 +89,7 @@ struct RaymondState<Resource> {
     resolvers: Vec<futures::Complete<Resource>>
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 enum RaymondMessage<Resource> { GrantToken(Resource), Request }
 
 impl<Resource> MutexAlgorithm<Resource, RaymondMessage<Resource>, ()> for RaymondState<Resource> {
@@ -108,13 +108,13 @@ struct ApplicationState {
     files: HashMap<String, RaymondState<String>>, // fname -> contents
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct ApplicationMessage {
     fname: String,
     ty: ApplicationMessageType,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 enum ApplicationMessageType {
     CreateFile,
     Raymond(RaymondMessage<String>),
@@ -146,6 +146,14 @@ impl<I> LengthPrefixedReader<I> {
 struct LengthPrefixedWriter<I> {
     underlying: WriteHalf<I>,
     writestate: Option<LengthPrefixedFramerState>,
+}
+impl<I> LengthPrefixedWriter<I> {
+    fn new(i: WriteHalf<I>) -> Self {
+        LengthPrefixedWriter {
+            underlying: i,
+            writestate: None,
+        }
+    }
 }
 
 impl<I: Io> FramedIo for LengthPrefixedReader<I> {
@@ -262,8 +270,8 @@ struct ApplicationMessageReader(LengthPrefixedReader<TcpStream>);
 struct ApplicationMessageWriter(LengthPrefixedWriter<TcpStream>);
 
 impl FramedIo for ApplicationMessageReader {
-    type In = ApplicationMessageType;
-    type Out = ApplicationMessageType;
+    type In = ApplicationMessage;
+    type Out = ApplicationMessage;
     fn poll_read(&mut self) -> Async<()> {
         self.0.poll_read()
     }
@@ -285,8 +293,8 @@ impl FramedIo for ApplicationMessageReader {
 }
 
 impl FramedIo for ApplicationMessageWriter {
-    type In = ApplicationMessageType;
-    type Out = ApplicationMessageType;
+    type In = ApplicationMessage;
+    type Out = ApplicationMessage;
     fn poll_read(&mut self) -> Async<()> {
         panic!("poll_read on ApplicationMessageWriter");
     }
@@ -308,27 +316,50 @@ impl FramedIo for ApplicationMessageWriter {
 
 struct ReadFrame<I>(Option<I>);
 impl<I: FramedIo<In=In, Out=Out>, In, Out> Future for ReadFrame<I> {
-    type Item = (ReadFrame<I>, Out);
+    type Item = (I, Out);
     type Error = io::Error;
-    fn poll(&mut self) -> Poll<(ReadFrame<I>, Out), io::Error> {
+    fn poll(&mut self) -> Poll<(I, Out), io::Error> {
         let oldself = mem::replace(&mut self.0, None);
-        let (res, newself) = if let Some(mut amr) = oldself {
-            if let Async::NotReady = amr.poll_read() {
-                (Ok(Async::NotReady), Some(amr))
-            } else { match amr.read() {
-                Ok(Async::Ready(x)) => (Ok(Async::Ready((ReadFrame(Some(amr)), x))), None),
-                Ok(Async::NotReady) => (Ok(Async::NotReady), Some(amr)),
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => (Ok(Async::NotReady), Some(amr)),
+        let (res, newself) = if let Some(mut r) = oldself {
+            if let Async::NotReady = r.poll_read() {
+                (Ok(Async::NotReady), Some(r))
+            } else { match r.read() {
+                Ok(Async::Ready(x)) => (Ok(Async::Ready((r, x))), None),
+                Ok(Async::NotReady) => (Ok(Async::NotReady), Some(r)),
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => (Ok(Async::NotReady), Some(r)),
                 Err(e) => (Err(e), None),
             }}
         } else {
-            (Err(io::Error::new(io::ErrorKind::Other, "ReadFrameFuture.0 should never be None")), None)
+            (Err(io::Error::new(io::ErrorKind::Other, "ReadFrame.0 should never be None")), None)
         };
         self.0 = newself;
         res
     }
 }
-// TODO: WriteFrame
+
+struct WriteFrame<I, In>(Option<(I, In)>);
+impl<I: FramedIo<In=In, Out=Out>, In, Out> Future for WriteFrame<I, In> where In: Clone {
+    type Item = I;
+    type Error = io::Error;
+    fn poll(&mut self) -> Poll<I, io::Error> {
+        let oldself = mem::replace(&mut self.0, None);
+        let (res, newself) = if let Some((mut w, x)) = oldself {
+            if let Async::NotReady = w.poll_write() {
+                (Ok(Async::NotReady), Some((w,x)))
+            } else { match w.write(x.clone() /* This clone will go away once FramedIo::write returns the original on NotReady */) {
+                Ok(Async::Ready(())) => (Ok(Async::Ready(w)), None),
+                Ok(Async::NotReady) => (Ok(Async::NotReady), Some((w, x))),
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => (Ok(Async::NotReady), Some((w, x))),
+                Err(e) => (Err(e), None),
+            }}
+        } else {
+            (Err(io::Error::new(io::ErrorKind::Other, "WriteFrame.0 should never be None")), None)
+        };
+        self.0 = newself;
+        res
+    }
+}
+
 
 /*trait FramedIoExt: FramedIo {
     fn read_frame(self) -> Box<Future<Item=(Self, Self::Out), Error=io::Error>> where Self: Sized {
@@ -397,10 +428,19 @@ fn main() {
                             println!("received msg {:?} from {}", msg, peer_pid);
                             Ok(())
                         });
-                        let write = write_all(w, b"Hello, world!\n").map(move |_| {
+                        let write1 = write_all(w, b"Hello, world!\n").and_then(move |(w,_)| {
                             println!("wrote hello to {}", peer_pid);
+                            Ok(w)
                         });
-                        read.join(write)
+                        let write2 = write1.and_then(|w| {
+                            let msg = ApplicationMessage {
+                                fname: "hello.txt".into(),
+                                ty: ApplicationMessageType::CreateFile,
+                            };
+                            WriteFrame(Some((ApplicationMessageWriter(LengthPrefixedWriter::new(w)), msg)))
+                                .map(|_| { println!("wrote frame"); })
+                        });
+                        read.join(write2)
                     });
                     handle.spawn(todo.map(|_| ()).map_err(|e| { println!("an error occurred: {:?}", e); }));
                 } else {
