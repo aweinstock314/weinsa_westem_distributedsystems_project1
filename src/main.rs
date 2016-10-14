@@ -187,12 +187,16 @@ impl<I: Io> FramedIo for LengthPrefixedReader<I> {
                     return Err(io::Error::new(io::ErrorKind::Other, "LengthPrefixedReader: bound exceeded"));
                 }
             }
-            self.readstate = Some(LengthPrefixedFramerState {
-                sofar: 0,
-                buf: vec![0u8; size],
-            });
+            let mut st = LengthPrefixedFramerState { sofar: 0, buf: vec![0u8; size], };
+            let newbytes = try!(self.underlying.read(&mut st.buf[st.sofar..]));
+            st.sofar += newbytes;
+            if st.sofar == st.buf.len() {
+                result = Ok(Async::Ready(mem::replace(&mut st.buf, Vec::new())));
+            } else {
+                result = Ok(Async::NotReady);
+                self.readstate = Some(st);
+            }
             restore = false;
-            result = Ok(Async::NotReady);
         }
         if restore {
             self.readstate = tmp;
@@ -448,6 +452,9 @@ fn main() {
                         futures::finished(sock.split())
                     });
                     let todo = rw.and_then(move |(r, w)| {
+                        // test with:
+                        // cargo build --release -- 2
+                        // python -c 'import struct; import sys; payload = "{\"fname\":\"hello.txt\",\"ty\":\"CreateFile\"}"; sys.stdout.write(struct.pack("<Q", len(payload)) + payload)' | netcat 0 9002 -p 9004
                         let rff = ReadFrame(Some(ApplicationMessageReader(LengthPrefixedReader::new(r, SizeLimit::Bounded(0x10000)))));
                         let read = rff.and_then(move |(_, msg)| {
                             println!("received msg {:?} from {}", msg, peer_pid);
