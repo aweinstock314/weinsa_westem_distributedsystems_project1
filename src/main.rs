@@ -12,7 +12,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use futures::stream::Stream;
 use futures::{Async, Future, Poll};
 use nom::IResult;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fs::File;
 use std::io::BufReader;
@@ -102,6 +102,10 @@ impl<Resource> MutexAlgorithm<Resource, RaymondMessage<Resource>, ()> for Raymon
     fn handle_message(&mut self, msg: RaymondMessage<Resource>) -> Vec<(Pid, RaymondMessage<Resource>)> {
         unimplemented!();
     }
+}
+
+struct ApplicationState {
+    files: HashMap<String, RaymondState<String>>, // fname -> contents
 }
 
 #[derive(Serialize, Deserialize)]
@@ -217,6 +221,13 @@ impl FramedIo for ApplicationMessageIoFramer {
     }
 }
 
+fn get_neighbors(topology: &Topology, pid: Pid) -> HashSet<Pid> {
+    topology.iter()
+        .filter(|&&(p1,p2)| { p1 == pid || p2 == pid }) // find entries containing our own pid (symmetric since tree.txt is undirected)
+        .map(|&(p1,p2)| { if p1 == pid { p2 } else { p1 } }) // in each edge, take the vertex which isn't us
+        .collect()
+}
+
 fn main() {
     let mut pid: Pid = 0;
     let mut tree_fname: String = "tree.txt".into();
@@ -232,10 +243,21 @@ fn main() {
         ap.parse_args_or_exit();
     }
     println!("{}, {}, {}", pid, tree_fname, nodes_fname);
+
+    // raw pairs of (pid,pid) edges
     let topology = run_parser_on_file(&tree_fname, parse_tree).expect(&format!("Couldn't parse {}", tree_fname));
     println!("topology: {:?}", topology);
+    // set of pids which are our neighbors
+    let own_neighbors = get_neighbors(&topology, pid);
+    println!("{}'s neighbors: {:?}", pid, own_neighbors);
+
+    // (pid -> ip) mapping
     let nodes = run_parser_on_file(&nodes_fname, parse_nodes).expect(&format!("Couldn't parse {}", nodes_fname));
     println!("nodes: {:?}", nodes);
+    // (ip -> pid) mapping
+    let nodes_rev: HashMap<SocketAddr, Pid> = nodes.iter().map(|(&k,&v)| (v,k)).collect();
+    println!("nodes_rev: {:?}", nodes_rev);
+
     let own_addr = nodes.get(&pid).expect(&format!("Couldn't find an entry for pid {} in {} ({:?})", pid, nodes_fname, nodes));
     println!("own_addr: {:?}", own_addr);
 
@@ -243,8 +265,19 @@ fn main() {
     let listener = TcpListener::bind(&own_addr, &core.handle()).expect("Failed to bind listener.");
     let server = {
         let handle = core.handle();
-        listener.incoming().for_each(move |(sock, addr)| {
-            handle.spawn(write_all(sock, b"Hello, world!\n").map(|_| ()).map_err(|_| ()));
+        listener.incoming().for_each(move |(sock, peer_addr)| {
+            println!("Incoming message from {:?}", peer_addr);
+            if let Some(peer_pid) = nodes_rev.get(&peer_addr) {
+                println!("peer_pid: {}", peer_pid);
+                if own_neighbors.contains(&peer_pid) {
+                    println!("{} is our neighbor", peer_pid);
+                    handle.spawn(write_all(sock, b"Hello, world!\n").map(|_| ()).map_err(|_| ()));
+                } else {
+                    println!("warning: contacted by a non-neighbor: {}", peer_pid);
+                }
+            } else {
+                println!("warning: contacted by a node outside the network: {:?}", peer_addr);
+            }
             Ok(())
         })
     };
