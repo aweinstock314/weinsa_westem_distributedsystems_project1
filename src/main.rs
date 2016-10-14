@@ -89,7 +89,7 @@ struct RaymondState<Resource> {
     resolvers: Vec<futures::Complete<Resource>>
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 enum RaymondMessage<Resource> { GrantToken(Resource), Request }
 
 impl<Resource> MutexAlgorithm<Resource, RaymondMessage<Resource>, ()> for RaymondState<Resource> {
@@ -108,13 +108,13 @@ struct ApplicationState {
     files: HashMap<String, RaymondState<String>>, // fname -> contents
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct ApplicationMessage {
     fname: String,
     ty: ApplicationMessageType,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 enum ApplicationMessageType {
     CreateFile,
     Raymond(RaymondMessage<String>),
@@ -156,14 +156,16 @@ impl<I: Io> FramedIo for LengthPrefixedReader<I> {
     }
     fn read(&mut self) -> Poll<Self::Out, io::Error> {
         let mut tmp = mem::replace(&mut self.readstate, None);
-        let mut restore = false; // borrow checker workaround
+        let (restore, result); // borrow checker workaround
         if let Some(ref mut st) = tmp {
             let newbytes = try!(self.underlying.read(&mut st.buf[st.sofar..]));
             st.sofar += newbytes;
             if st.sofar == st.buf.len() {
-                return Ok(Async::Ready(mem::replace(&mut st.buf, Vec::new())))
+                restore = false;
+                result = Ok(Async::Ready(mem::replace(&mut st.buf, Vec::new())));
             } else {
                 restore = true;
+                result = Ok(Async::NotReady);
             }
         } else {
             let size = try!(self.underlying.read_u64::<LittleEndian>()) as usize;
@@ -171,17 +173,18 @@ impl<I: Io> FramedIo for LengthPrefixedReader<I> {
                 sofar: 0,
                 buf: vec![0u8; size],
             });
-            return Ok(Async::NotReady);
+            restore = false;
+            result = Ok(Async::NotReady);
         }
         if restore {
             self.readstate = tmp;
         }
-        Ok(Async::NotReady)
+        result
     }
     fn poll_write(&mut self) -> Async<()> {
         panic!("poll_write on LengthPrefixedReader");
     }
-    fn write(&mut self, req: Self::In) -> Poll<(), io::Error> {
+    fn write(&mut self, _: Self::In) -> Poll<(), io::Error> {
         panic!("write on LengthPrefixedReader");
     }
     fn flush(&mut self) -> Poll<(), io::Error> {
@@ -204,15 +207,17 @@ impl<I: Io> FramedIo for LengthPrefixedWriter<I> {
     }
     fn write(&mut self, req: Self::In) -> Poll<(), io::Error> {
         let mut tmp = mem::replace(&mut self.writestate, None);
-        let mut restore = false; // borrow checker workaround
+        let (restore, result); // borrow checker workaround
         if let Some(ref mut st) = tmp {
             let newbytes = try!(self.underlying.write(&mut st.buf[st.sofar..]));
             st.sofar += newbytes;
             if st.sofar == st.buf.len() {
                 // didn't handle the current request, ask the caller to try again
-                return Ok(Async::NotReady);
+                restore = false;
+                result = Ok(Async::NotReady);
             } else {
                 restore = true;
+                result = Ok(Async::NotReady);
             }
         } else {
             try!(self.underlying.write_u64::<LittleEndian>(req.len() as u64));
@@ -220,12 +225,13 @@ impl<I: Io> FramedIo for LengthPrefixedWriter<I> {
                 sofar: 0,
                 buf: req,
             });
-            return Ok(Async::Ready(()));
+            restore = false;
+            result = Ok(Async::Ready(()));
         }
         if restore {
             self.writestate = tmp;
         }
-        Ok(Async::NotReady)
+        result
     }
     fn flush(&mut self) -> Poll<(), io::Error> {
         self.underlying.flush().map(Async::Ready)
@@ -270,7 +276,7 @@ impl FramedIo for ApplicationMessageReader {
     fn poll_write(&mut self) -> Async<()> {
         panic!("poll_write on ApplicationMessageReader");
     }
-    fn write(&mut self, req: Self::In) -> Poll<(), io::Error> {
+    fn write(&mut self, _: Self::In) -> Poll<(), io::Error> {
         panic!("write on ApplicationMessageReader");
     }
     fn flush(&mut self) -> Poll<(), io::Error> {
@@ -320,21 +326,21 @@ impl Future for ReadFrameFuture {
     type Item = (ApplicationMessageReader, ApplicationMessageType);
     type Error = io::Error;
     fn poll(&mut self) -> Poll<(ApplicationMessageReader, ApplicationMessageType), io::Error> {
-        let tmp = mem::replace(&mut self.0, None);
-        let amr = if let Some(mut amr) = tmp {
-            // TODO: optimize using poll_read to early-abort if not ready
-            //try_ready!(Ok(amr.poll_read()));
-            match amr.read() {
-                Ok(Async::Ready(x)) => return Ok(Async::Ready((amr, x))),
-                Ok(Async::NotReady) => amr,
-                Err(e) => return Err(e),
-            }
+        let oldself = mem::replace(&mut self.0, None);
+        let (res, newself) = if let Some(mut amr) = oldself {
+            if let Async::NotReady = amr.poll_read() {
+                (Ok(Async::NotReady), Some(amr))
+            } else { match amr.read() {
+                Ok(Async::Ready(x)) => (Ok(Async::Ready((amr, x))), None),
+                Ok(Async::NotReady) => (Ok(Async::NotReady), Some(amr)),
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => (Ok(Async::NotReady), Some(amr)),
+                Err(e) => (Err(e), None),
+            }}
         } else {
-            let e: io::Error = io::Error::new(io::ErrorKind::Other, "ReadFrameFuture.0 should never be None");
-            return Err(e);
+            (Err(io::Error::new(io::ErrorKind::Other, "ReadFrameFuture.0 should never be None")), None)
         };
-        self.0 = Some(amr);
-        return Ok(Async::NotReady);
+        self.0 = newself;
+        res
     }
 }
 // TODO: WriteFrameFuture
@@ -385,11 +391,25 @@ fn main() {
         let handle = core.handle();
         listener.incoming().for_each(move |(sock, peer_addr)| {
             println!("Incoming message from {:?}", peer_addr);
-            if let Some(peer_pid) = nodes_rev.get(&peer_addr) {
+            if let Some(&peer_pid) = nodes_rev.get(&peer_addr) {
                 println!("peer_pid: {}", peer_pid);
                 if own_neighbors.contains(&peer_pid) {
                     println!("{} is our neighbor", peer_pid);
-                    handle.spawn(write_all(sock, b"Hello, world!\n").map(|_| ()).map_err(|_| ()));
+                    let rw = futures::lazy(move || {
+                        futures::finished(sock.split())
+                    });
+                    let todo = rw.and_then(move |(r, w)| {
+                        let rff = ReadFrameFuture(Some(ApplicationMessageReader(LengthPrefixedReader::new(r))));
+                        let read = rff.and_then(move |(_, msg)| {
+                            println!("received msg {:?} from {}", msg, peer_pid);
+                            Ok(())
+                        });
+                        let write = write_all(w, b"Hello, world!\n").map(move |_| {
+                            println!("wrote hello to {}", peer_pid);
+                        });
+                        read.join(write)
+                    });
+                    handle.spawn(todo.map(|_| ()).map_err(|e| { println!("an error occurred: {:?}", e); }));
                 } else {
                     println!("warning: contacted by a non-neighbor: {}", peer_pid);
                 }
