@@ -22,7 +22,7 @@ use std::mem;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::str;
-use tokio_core::io::{write_all, FramedIo, Io};
+use tokio_core::io::{write_all, FramedIo, Io, ReadHalf, WriteHalf};
 use tokio_core::net::{TcpListener, TcpStream};
 use tokio_core::reactor::Core;
 
@@ -126,12 +126,29 @@ struct LengthPrefixedFramerState {
     buf: Vec<u8>,
 }
 struct LengthPrefixedFramer<I> {
-    underlying: I,
+    reader: LengthPrefixedReader<I>,
+    writer: LengthPrefixedWriter<I>,
+}
+
+struct LengthPrefixedReader<I> {
+    underlying: ReadHalf<I>,
     readstate: Option<LengthPrefixedFramerState>,
+}
+impl<I> LengthPrefixedReader<I> {
+    fn new(i: ReadHalf<I>) -> Self {
+        LengthPrefixedReader {
+            underlying: i,
+            readstate: None,
+        }
+    }
+}
+
+struct LengthPrefixedWriter<I> {
+    underlying: WriteHalf<I>,
     writestate: Option<LengthPrefixedFramerState>,
 }
 
-impl<I: Io> FramedIo for LengthPrefixedFramer<I> {
+impl<I: Io> FramedIo for LengthPrefixedReader<I> {
     type In = Vec<u8>;
     type Out = Vec<u8>;
     fn poll_read(&mut self) -> Async<()> {
@@ -160,6 +177,27 @@ impl<I: Io> FramedIo for LengthPrefixedFramer<I> {
             self.readstate = tmp;
         }
         Ok(Async::NotReady)
+    }
+    fn poll_write(&mut self) -> Async<()> {
+        panic!("poll_write on LengthPrefixedReader");
+    }
+    fn write(&mut self, req: Self::In) -> Poll<(), io::Error> {
+        panic!("write on LengthPrefixedReader");
+    }
+    fn flush(&mut self) -> Poll<(), io::Error> {
+        panic!("flush on LengthPrefixedReader");
+    }
+}
+
+
+impl<I: Io> FramedIo for LengthPrefixedWriter<I> {
+    type In = Vec<u8>;
+    type Out = Vec<u8>;
+    fn poll_read(&mut self) -> Async<()> {
+        panic!("poll_read on LengthPrefixedWriter");
+    }
+    fn read(&mut self) -> Poll<Self::Out, io::Error> {
+        panic!("read on LengthPrefixedWriter");
     }
     fn poll_write(&mut self) -> Async<()> {
         self.underlying.poll_write()
@@ -194,9 +232,30 @@ impl<I: Io> FramedIo for LengthPrefixedFramer<I> {
     }
 }
 
-struct ApplicationMessageIoFramer(LengthPrefixedFramer<TcpStream>);
+impl<I: Io> FramedIo for LengthPrefixedFramer<I> {
+    type In = Vec<u8>;
+    type Out = Vec<u8>;
+    fn poll_read(&mut self) -> Async<()> {
+        self.reader.poll_read()
+    }
+    fn read(&mut self) -> Poll<Self::Out, io::Error> {
+        self.reader.read()
+    }
+    fn poll_write(&mut self) -> Async<()> {
+        self.writer.poll_write()
+    }
+    fn write(&mut self, req: Self::In) -> Poll<(), io::Error> {
+        self.writer.write(req)
+    }
+    fn flush(&mut self) -> Poll<(), io::Error> {
+        self.writer.flush()
+    }
+}
 
-impl FramedIo for ApplicationMessageIoFramer {
+struct ApplicationMessageReader(LengthPrefixedReader<TcpStream>);
+struct ApplicationMessageWriter(LengthPrefixedWriter<TcpStream>);
+
+impl FramedIo for ApplicationMessageReader {
     type In = ApplicationMessageType;
     type Out = ApplicationMessageType;
     fn poll_read(&mut self) -> Async<()> {
@@ -207,6 +266,26 @@ impl FramedIo for ApplicationMessageIoFramer {
         bincode::serde::deserialize(&buf)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
             .map(|r| Async::Ready(r))
+    }
+    fn poll_write(&mut self) -> Async<()> {
+        panic!("poll_write on ApplicationMessageReader");
+    }
+    fn write(&mut self, req: Self::In) -> Poll<(), io::Error> {
+        panic!("write on ApplicationMessageReader");
+    }
+    fn flush(&mut self) -> Poll<(), io::Error> {
+        panic!("flush on ApplicationMessageReader");
+    }
+}
+
+impl FramedIo for ApplicationMessageWriter {
+    type In = ApplicationMessageType;
+    type Out = ApplicationMessageType;
+    fn poll_read(&mut self) -> Async<()> {
+        panic!("poll_read on ApplicationMessageWriter");
+    }
+    fn read(&mut self) -> Poll<Self::Out, io::Error> {
+        panic!("poll_write on ApplicationMessageWriter");
     }
     fn poll_write(&mut self) -> Async<()> {
         self.0.poll_write()
@@ -220,6 +299,45 @@ impl FramedIo for ApplicationMessageIoFramer {
         self.0.flush()
     }
 }
+
+// Abandoned as too generic (hitting E0296 even after some type tetris)
+/*struct ReadFrame<I>(I);
+impl<I: FramedIo<In=In, Out=Out2>, In, Out2> Future<Item=(ReadFrame<I>, <I as FramedIo>::Out), Error=io::Error> for ReadFrame<I> {
+    fn poll(&mut self) -> Poll<(ReadFrame<I>, Out2), io::Error> {
+        try_ready!(self.0.poll_read());
+        self.0.read()
+    }
+}
+trait FramedIoExt: FramedIo {
+    fn read_frame(self) -> Box<Future<Item=(Self, Self::Out), Error=io::Error>> where Self: Sized {
+        Box::new(ReadFrame(self))
+    }
+    fn write_frame(self, Self::In) -> Box<Future<Item=Self, Error=io::Error>>;
+}*/
+
+struct ReadFrameFuture(Option<ApplicationMessageReader>);
+impl Future for ReadFrameFuture {
+    type Item = (ApplicationMessageReader, ApplicationMessageType);
+    type Error = io::Error;
+    fn poll(&mut self) -> Poll<(ApplicationMessageReader, ApplicationMessageType), io::Error> {
+        let tmp = mem::replace(&mut self.0, None);
+        let amr = if let Some(mut amr) = tmp {
+            // TODO: optimize using poll_read to early-abort if not ready
+            //try_ready!(Ok(amr.poll_read()));
+            match amr.read() {
+                Ok(Async::Ready(x)) => return Ok(Async::Ready((amr, x))),
+                Ok(Async::NotReady) => amr,
+                Err(e) => return Err(e),
+            }
+        } else {
+            let e: io::Error = io::Error::new(io::ErrorKind::Other, "ReadFrameFuture.0 should never be None");
+            return Err(e);
+        };
+        self.0 = Some(amr);
+        return Ok(Async::NotReady);
+    }
+}
+// TODO: WriteFrameFuture
 
 fn get_neighbors(topology: &Topology, pid: Pid) -> HashSet<Pid> {
     topology.iter()
