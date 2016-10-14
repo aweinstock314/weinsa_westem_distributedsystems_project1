@@ -3,6 +3,7 @@ extern crate argparse;
 extern crate bincode;
 extern crate byteorder;
 #[macro_use] extern crate futures;
+#[macro_use] extern crate lazy_static;
 #[macro_use] extern crate nom;
 #[macro_use] extern crate serde_derive;
 extern crate serde_json;
@@ -19,12 +20,11 @@ use std::error::Error;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::prelude::*;
-use std::io;
-use std::mem;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
-use std::str;
-use tokio_core::io::{write_all, FramedIo, Io, ReadHalf, WriteHalf};
+use std::sync::Mutex;
+use std::{fmt, io, mem, str};
+use tokio_core::io::{FramedIo, Io, ReadHalf, WriteHalf};
 use tokio_core::net::{TcpListener, TcpStream};
 use tokio_core::reactor::Core;
 
@@ -91,6 +91,31 @@ struct RaymondState<Resource> {
     resolvers: Vec<futures::Complete<Resource>>
 }
 
+impl<Resource> RaymondState<Resource> {
+    fn new(holder: Pid) -> RaymondState<Resource> {
+        RaymondState {
+            using_resource: false,
+            holder: holder,
+            requests: VecDeque::new(),
+            asked: false,
+            resolvers: Vec::new(),
+        }
+    }
+}
+
+// https://github.com/rust-lang/rfcs/blob/master/text/0640-debug-improvements.md#helper-types
+impl<Resource: fmt::Debug> fmt::Debug for RaymondState<Resource> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_struct("RaymondState")
+            .field("using_resource", &self.using_resource)
+            .field("holder", &self.holder)
+            .field("requests", &self.requests)
+            .field("asked", &self.asked)
+            .field("resolvers", &self.resolvers.iter().map(|_| ()).collect::<Vec<()>>())
+            .finish()
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 enum RaymondMessage<Resource> { GrantToken(Resource), Request }
 
@@ -106,6 +131,7 @@ impl<Resource> MutexAlgorithm<Resource, RaymondMessage<Resource>, ()> for Raymon
     }
 }
 
+#[derive(Debug)]
 struct ApplicationState {
     files: HashMap<String, RaymondState<String>>, // fname -> contents
 }
@@ -405,6 +431,10 @@ fn get_neighbors(topology: &Topology, pid: Pid) -> HashSet<Pid> {
         .collect()
 }
 
+lazy_static! {
+    static ref APPSTATE: Mutex<ApplicationState> = Mutex::new(ApplicationState { files: HashMap::new() });
+}
+
 fn main() {
     let mut pid: Pid = 0;
     let mut tree_fname: String = "tree.txt".into();
@@ -451,7 +481,7 @@ fn main() {
                     let rw = futures::lazy(move || {
                         futures::finished(sock.split())
                     });
-                    let todo = rw.and_then(move |(r, w)| {
+                    /*let todo = rw.and_then(move |(r, w)| {
                         // test with:
                         // cargo build --release -- 2
                         // python -c 'import struct; import sys; payload = "{\"fname\":\"hello.txt\",\"ty\":\"CreateFile\"}"; sys.stdout.write(struct.pack("<Q", len(payload)) + payload)' | netcat 0 9002 -p 9004
@@ -473,6 +503,39 @@ fn main() {
                                 .map(|_| { println!("wrote frame"); })
                         });
                         read.join(write2)
+                    });*/
+                    let rw = rw.map(|(r, w)| (
+                        ApplicationMessageReader(LengthPrefixedReader::new(r, SizeLimit::Bounded(0x10000))),
+                        ApplicationMessageWriter(LengthPrefixedWriter::new(w))
+                    ));
+                    let todo = rw.and_then(move |(r, w)| {
+                        let reader = ReadFrame(Some(r)).and_then(move |(_, msg)| {
+                            println!("Received {:?} from {}", msg, peer_pid);
+                            let mut appstate = APPSTATE.lock().unwrap();
+                            println!("application state before: {:#?}", *appstate);
+                            match msg.ty {
+                                ApplicationMessageType::CreateFile => {
+                                    // TODO: check for existence, report warnings
+                                    appstate.files.insert(msg.fname, RaymondState::new(peer_pid));
+                                },
+                                ApplicationMessageType::Raymond(raymsg) => {
+                                    if let Some(mut raystate) = appstate.files.get_mut(&msg.fname) {
+                                        let tosend = raystate.handle_message(raymsg);
+                                        println!("tosend: {:?}", tosend);
+                                        // TODO: sending things
+                                    } else {
+                                        println!("warning: got a raymond message for a nonexistant file: {}", msg.fname);
+                                    }
+                                },
+                                ApplicationMessageType::DeleteFile => {
+                                    //TODO: implement
+                                    ()
+                                },
+                            }
+                            println!("application state after: {:#?}", *appstate);
+                            Ok(())
+                        });
+                        reader
                     });
                     handle.spawn(todo.map(|_| ()).map_err(|e| { println!("an error occurred: {:?}", e); }));
                 } else {
