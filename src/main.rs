@@ -22,7 +22,7 @@ pub use std::io::BufReader;
 pub use std::io::prelude::*;
 pub use std::net::{IpAddr, SocketAddr};
 pub use std::str::FromStr;
-pub use std::sync::Mutex;
+pub use std::sync::{Mutex, MutexGuard};
 pub use std::{fmt, io, mem, str};
 pub use tokio_core::io::{FramedIo, Io, ReadHalf, WriteHalf};
 pub use tokio_core::net::{TcpListener, TcpStream};
@@ -40,9 +40,24 @@ pub use framing_helpers::*;
 pub use mutexalgo::*;
 pub use parsers::*;
 
-#[derive(Debug)]
 struct ApplicationState {
     files: HashMap<String, RaymondState<String>>, // fname -> contents
+    cached_peers: HashMap<Pid, futures::stream::Sender<ApplicationMessage, io::Error>>,
+}
+
+impl ApplicationState {
+    fn cache_peer(&mut self, pid: Pid, sender: futures::stream::Sender<ApplicationMessage, io::Error>) {
+        self.cached_peers.entry(pid).or_insert(sender);
+    }
+}
+
+impl fmt::Debug for ApplicationState {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_struct("ApplicationState")
+            .field("files", &self.files)
+            .field("cached_peers", &self.cached_peers.iter().map(|(&k, _)| k).collect::<HashSet<Pid>>())
+            .finish()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -131,7 +146,53 @@ fn get_neighbors(topology: &Topology, pid: Pid) -> HashSet<Pid> {
 lazy_static! {
     static ref APPSTATE: Mutex<ApplicationState> = Mutex::new(ApplicationState {
         files: HashMap::new(),
+        cached_peers: HashMap::new(),
     });
+}
+
+fn get_appstate<'a>() -> MutexGuard<'a, ApplicationState> {
+    APPSTATE.lock().expect("Failed to acquire APPSTATE lock.")
+}
+
+// TODO: dream up better stream combinators?
+struct StreamWriter<W: FramedIo> {
+    writer: W,
+    receiver: futures::stream::Receiver<W::In, io::Error>,
+    queue: VecDeque<W::In>,
+}
+impl<W: FramedIo> Stream for StreamWriter<W> where W::In: fmt::Debug {
+    type Item = ();
+    type Error = io::Error;
+    fn poll(&mut self) -> Poll<Option<()>, io::Error> {
+        println!("In StreamWriter::poll");
+        while let Async::Ready(Some(msg)) = try!(self.receiver.poll()) {
+            println!("\tPushing {:?}", msg);
+            self.queue.push_back(msg);
+        }
+        if !self.queue.is_empty() {
+            println!("\tAbout to poll_write");
+            if let Async::NotReady = self.writer.poll_write() {
+                println!("\t\tpoll_write returned Async::NotReady");
+            } else {
+                println!("\t\tpoll_write returned Async::Ready");
+                for msg in self.queue.drain(..) {
+                    println!("About to write {:?}", msg);
+                    try_ready!(self.writer.write(msg));
+                }
+                println!("Returning from StreamWriter::poll");
+            }
+        }
+        Ok(Async::NotReady) // deliberate infinite loop/yield
+    }
+}
+fn make_stream_writer<W: FramedIo>(w: W) -> (futures::stream::Sender<W::In, io::Error>, StreamWriter<W>) {
+    let (send, recv) = futures::stream::channel::<W::In, io::Error>();
+    let sw = StreamWriter {
+        writer: w,
+        receiver: recv,
+        queue: VecDeque::new(),
+    };
+    (send, sw)
 }
 
 fn main() {
@@ -186,10 +247,16 @@ fn main() {
                     ));
                     let neighbors = own_neighbors.clone();
                     let todo = rw.and_then(move |(r, w)| {
+                        let (sender, writer) = make_stream_writer(w);
+                        let writer = writer.for_each(|()| Ok(())).map_err(|e| {
+                            println!("An error occurred during the exection of writer: {:?}", e);
+                            io::Error::new(io::ErrorKind::Other, "writer failed")
+                        });
                         let reader = read_frame(r).and_then(move |(_, msg)| {
                             println!("Received {:?} from {}", msg, peer_pid);
-                            let mut appstate = APPSTATE.lock().expect("Failed to acquire APPSTATE lock.");
+                            let mut appstate = get_appstate();
                             println!("application state before: {:#?}", *appstate);
+                            appstate.cache_peer(peer_pid, sender);
                             match msg.ty {
                                 ApplicationMessageType::CreateFile => {
                                     // TODO: check for existence, report warnings
@@ -214,9 +281,9 @@ fn main() {
                             println!("application state after: {:#?}", *appstate);
                             Ok(())
                         });
-                        reader
+                        reader.select(writer).map_err(|(e,_)| e)
                     });
-                    handle.spawn(todo.map(|_| ()).map_err(|e| { println!("an error occurred: {:?}", e); }));
+                    handle.spawn(todo.map(|_| ()).map_err(|e| { println!("An error occurred: {:?}", e); }));
                 } else {
                     println!("warning: contacted by a non-neighbor: {}", peer_pid);
                 }
