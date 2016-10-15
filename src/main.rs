@@ -1,4 +1,4 @@
-#![feature(rustc_macro)]
+#![feature(proc_macro)]
 pub extern crate argparse;
 pub extern crate bincode;
 pub extern crate byteorder;
