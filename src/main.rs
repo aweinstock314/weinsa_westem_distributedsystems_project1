@@ -80,7 +80,7 @@ fn run_parser_on_file<A, F: Fn(&[u8]) -> IResult<&[u8], A>>(filename: &str, pars
 trait MutexAlgorithm<Resource, Message, E> {
     fn request(&mut self) -> (Box<Future<Item=Resource, Error=E>>, Vec<(Pid, Message)>);
     fn release(&mut self) -> Vec<(Pid, Message)>;
-    fn handle_message(&mut self, Message) -> Vec<(Pid, Message)>;
+    fn handle_message(&mut self, &PeerContext, Message) -> Vec<(Pid, Message)>;
 }
 
 struct RaymondState<Resource> {
@@ -119,6 +119,13 @@ impl<Resource: fmt::Debug> fmt::Debug for RaymondState<Resource> {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 enum RaymondMessage<Resource> { GrantToken(Resource), Request }
 
+#[derive(Debug)]
+struct PeerContext<'a> {
+    selfpid: Pid,
+    peerpid: Pid,
+    neighbors: &'a HashSet<Pid>,
+}
+
 impl<Resource> MutexAlgorithm<Resource, RaymondMessage<Resource>, ()> for RaymondState<Resource> {
     fn request(&mut self) -> (Box<Future<Item=Resource, Error=()>>, Vec<(Pid, RaymondMessage<Resource>)>) {
         unimplemented!();
@@ -126,7 +133,7 @@ impl<Resource> MutexAlgorithm<Resource, RaymondMessage<Resource>, ()> for Raymon
     fn release(&mut self) -> Vec<(Pid, RaymondMessage<Resource>)> {
         unimplemented!();
     }
-    fn handle_message(&mut self, msg: RaymondMessage<Resource>) -> Vec<(Pid, RaymondMessage<Resource>)> {
+    fn handle_message(&mut self, pc: &PeerContext, msg: RaymondMessage<Resource>) -> Vec<(Pid, RaymondMessage<Resource>)> {
         unimplemented!();
     }
 }
@@ -432,7 +439,9 @@ fn get_neighbors(topology: &Topology, pid: Pid) -> HashSet<Pid> {
 }
 
 lazy_static! {
-    static ref APPSTATE: Mutex<ApplicationState> = Mutex::new(ApplicationState { files: HashMap::new() });
+    static ref APPSTATE: Mutex<ApplicationState> = Mutex::new(ApplicationState {
+        files: HashMap::new(),
+    });
 }
 
 fn main() {
@@ -481,37 +490,15 @@ fn main() {
                     let rw = futures::lazy(move || {
                         futures::finished(sock.split())
                     });
-                    /*let todo = rw.and_then(move |(r, w)| {
-                        // test with:
-                        // cargo build --release -- 2
-                        // python -c 'import struct; import sys; payload = "{\"fname\":\"hello.txt\",\"ty\":\"CreateFile\"}"; sys.stdout.write(struct.pack("<Q", len(payload)) + payload)' | netcat 0 9002 -p 9004
-                        let rff = ReadFrame(Some(ApplicationMessageReader(LengthPrefixedReader::new(r, SizeLimit::Bounded(0x10000)))));
-                        let read = rff.and_then(move |(_, msg)| {
-                            println!("received msg {:?} from {}", msg, peer_pid);
-                            Ok(())
-                        });
-                        let write1 = write_all(w, b"Hello, world!\n").and_then(move |(w,_)| {
-                            println!("wrote hello to {}", peer_pid);
-                            Ok(w)
-                        });
-                        let write2 = write1.and_then(|w| {
-                            let msg = ApplicationMessage {
-                                fname: "hello.txt".into(),
-                                ty: ApplicationMessageType::CreateFile,
-                            };
-                            WriteFrame(Some((ApplicationMessageWriter(LengthPrefixedWriter::new(w)), msg)))
-                                .map(|_| { println!("wrote frame"); })
-                        });
-                        read.join(write2)
-                    });*/
                     let rw = rw.map(|(r, w)| (
                         ApplicationMessageReader(LengthPrefixedReader::new(r, SizeLimit::Bounded(0x10000))),
                         ApplicationMessageWriter(LengthPrefixedWriter::new(w))
                     ));
+                    let neighbors = own_neighbors.clone();
                     let todo = rw.and_then(move |(r, w)| {
                         let reader = ReadFrame(Some(r)).and_then(move |(_, msg)| {
                             println!("Received {:?} from {}", msg, peer_pid);
-                            let mut appstate = APPSTATE.lock().unwrap();
+                            let mut appstate = APPSTATE.lock().expect("Failed to acquire APPSTATE lock.");
                             println!("application state before: {:#?}", *appstate);
                             match msg.ty {
                                 ApplicationMessageType::CreateFile => {
@@ -520,9 +507,11 @@ fn main() {
                                 },
                                 ApplicationMessageType::Raymond(raymsg) => {
                                     if let Some(mut raystate) = appstate.files.get_mut(&msg.fname) {
-                                        let tosend = raystate.handle_message(raymsg);
+                                        let pc = PeerContext { selfpid: pid, peerpid: peer_pid, neighbors: &neighbors };
+                                        let tosend = raystate.handle_message(&pc, raymsg);
                                         println!("tosend: {:?}", tosend);
                                         // TODO: sending things
+                                        // store an MPSC sender in the global appstate?
                                     } else {
                                         println!("warning: got a raymond message for a nonexistant file: {}", msg.fname);
                                     }
