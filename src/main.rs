@@ -1,3 +1,4 @@
+#![feature(conservative_impl_trait)]
 #![feature(proc_macro)]
 pub extern crate argparse;
 pub extern crate bincode;
@@ -26,7 +27,7 @@ pub use std::sync::{Mutex, MutexGuard};
 pub use std::{fmt, io, mem, str};
 pub use tokio_core::io::{FramedIo, Io, ReadHalf, WriteHalf};
 pub use tokio_core::net::{TcpListener, TcpStream};
-pub use tokio_core::reactor::Core;
+pub use tokio_core::reactor::{Core, Handle};
 
 pub type Pid = usize;
 pub type Topology = Vec<(Pid, Pid)>;
@@ -43,11 +44,31 @@ pub use parsers::*;
 struct ApplicationState {
     files: HashMap<String, RaymondState<String>>, // fname -> contents
     cached_peers: HashMap<Pid, futures::stream::Sender<ApplicationMessage, io::Error>>,
+    nodes: Nodes,
 }
 
 impl ApplicationState {
     fn cache_peer(&mut self, pid: Pid, sender: futures::stream::Sender<ApplicationMessage, io::Error>) {
         self.cached_peers.entry(pid).or_insert(sender);
+    }
+    fn send_message(&mut self, pid: Pid, msg: ApplicationMessage, h: &Handle) -> impl Future<Item=(), Error=io::Error> {
+        if let None = self.cached_peers.get(&pid) {
+            let addr = self.nodes.get(&pid).expect(&format!("Tried to contact pid {}, but they don't have a nodes.txt entry (nodes: {:?})", pid, self.nodes));
+            println!("ApplicationState::send_message: trying to contact {:?}", addr);
+            let sock = TcpStream::connect(addr, h);
+            let rw = sock.and_then(move |sock| { split_sock(sock) });
+            let r_sender_writer = rw.and_then(|(r,w)| {
+                let (sender, writer) = make_stream_writer(w);
+                Ok((r,sender, writer))
+            }).wait();
+            if let Ok((r,sender,writer)) = r_sender_writer {
+                println!("tcp connection happened");
+            } else {
+                println!("tcp connection didn't happen");
+            }
+        }
+        // TODO: 1) address the case where we have a connection cached 2) maybe cache the reader? start a readloop? 3) actually send the message
+        futures::lazy(|| Ok(()))
     }
 }
 
@@ -147,6 +168,7 @@ lazy_static! {
     static ref APPSTATE: Mutex<ApplicationState> = Mutex::new(ApplicationState {
         files: HashMap::new(),
         cached_peers: HashMap::new(),
+        nodes: HashMap::new(),
     });
 }
 
@@ -195,6 +217,17 @@ fn make_stream_writer<W: FramedIo>(w: W) -> (futures::stream::Sender<W::In, io::
     (send, sw)
 }
 
+fn split_sock(sock: TcpStream) -> impl Future<Item=(ApplicationMessageReader, ApplicationMessageWriter), Error=io::Error> {
+    let rw = futures::lazy(move || {
+        futures::finished(sock.split())
+    });
+    let rw = rw.map(|(r, w)| (
+        ApplicationMessageReader(LengthPrefixedReader::new(r, SizeLimit::Bounded(0x10000))),
+        ApplicationMessageWriter(LengthPrefixedWriter::new(w))
+    ));
+    rw
+}
+
 fn main() {
     let mut pid: Pid = 0;
     let mut tree_fname: String = "tree.txt".into();
@@ -229,6 +262,12 @@ fn main() {
     println!("own_addr: {:?}", own_addr);
 
     let mut core = Core::new().expect("Failed to initialize event loop.");
+
+    {
+        let mut appstate = get_appstate();
+        appstate.nodes = nodes.clone();
+    }
+
     let listener = TcpListener::bind(&own_addr, &core.handle()).expect("Failed to bind listener.");
     let server = {
         let handle = core.handle();
@@ -238,13 +277,7 @@ fn main() {
                 println!("peer_pid: {}", peer_pid);
                 if own_neighbors.contains(&peer_pid) {
                     println!("{} is our neighbor", peer_pid);
-                    let rw = futures::lazy(move || {
-                        futures::finished(sock.split())
-                    });
-                    let rw = rw.map(|(r, w)| (
-                        ApplicationMessageReader(LengthPrefixedReader::new(r, SizeLimit::Bounded(0x10000))),
-                        ApplicationMessageWriter(LengthPrefixedWriter::new(w))
-                    ));
+                    let rw = split_sock(sock);
                     let neighbors = own_neighbors.clone();
                     let todo = rw.and_then(move |(r, w)| {
                         let (sender, writer) = make_stream_writer(w);
@@ -261,6 +294,7 @@ fn main() {
                                 ApplicationMessageType::CreateFile => {
                                     // TODO: check for existence, report warnings
                                     appstate.files.insert(msg.fname, RaymondState::new(peer_pid, pid));
+                                    // TODO: propagate to non-sender neighbors
                                 },
                                 ApplicationMessageType::Raymond(raymsg) => {
                                     if let Some(mut raystate) = appstate.files.get_mut(&msg.fname) {
