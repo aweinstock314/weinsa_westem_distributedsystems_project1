@@ -260,7 +260,7 @@ fn main() {
                             match msg.ty {
                                 ApplicationMessageType::CreateFile => {
                                     // TODO: check for existence, report warnings
-                                    appstate.files.insert(msg.fname, RaymondState::new(peer_pid));
+                                    appstate.files.insert(msg.fname, RaymondState::new(peer_pid, pid));
                                 },
                                 ApplicationMessageType::Raymond(raymsg) => {
                                     if let Some(mut raystate) = appstate.files.get_mut(&msg.fname) {

@@ -4,9 +4,7 @@ import parse
 import socket
 import time
 
-treeFile = "tree.txt"
-nodeFile = "nodes.txt"
-socksize = 1024
+SOCKSIZE = 1024
 
 
 class Node:
@@ -28,9 +26,9 @@ def start(node):
 	cli.connect((node.ip, node.cli))
 	return (proc, cli)
 
-def passCmd(conn, cmd, node)
+def passCmd(conn, cmd, node):
 	conn.sendall(cmd)
-	data = conn.recv(socksize)
+	return conn.recv(SOCKSIZE)
 
 # check to make sure the output data makes sense
 # TODO: Parse data
@@ -75,20 +73,20 @@ def test_errors():
 if __name__ == "__main__":
 	# Arg parsing
 	parser = argparse.ArgumentParser(description="Testing our Raymond's Algo implementation.")
-	parser.add_argument("-t", "--tree-file", help='Specify tree file')
->>> parser.add_argument("-n", "--nodes-file", help='Specify nodes/ips file')
+	parser.add_argument("-t", default="tree.txt", help='Specify tree file')
+	parser.add_argument("-n", default="nodes.txt", help='Specify nodes/ips file')
 	args = parser.parse_args()
 
 	# Reading in nodes.txt
 	nodes = list()
-	for line in open(nodeFile):
+	for line in open(args.n):
 		p = parse.parse(('({pid},"{ip}",{port},{cli})'), line)
 		nodes.append( Node(p['pid'], p['ip'], p['port'], p['cli']) )
 	print(nodes)
 
 	#reading in trees.txt
 	tree = dict()
-	for line in open(treeFile):
+	for line in open(args.t):
 		p = parse.parse("({p1},{p2})", line)
 		(p1, p2) = (p['p1'], p['p2'])
 		if tree.get(p1):
@@ -105,7 +103,7 @@ if __name__ == "__main__":
 	processes = list()
 	clis = list()
 	for i in nodes:
-		(proc, cli) = start(i.pid) 
+		(proc, cli) = start(i) 
 		processes.append( proc )
 		clis.append(cli)
 
