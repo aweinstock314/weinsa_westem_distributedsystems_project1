@@ -1,3 +1,11 @@
+/// The main program
+/// This is the file that runs everything
+/// Currently it does the following:
+///     1. Read in config files (tree.txt, nodes.txt)
+///     2. Boots up a CLI interface on a socket
+///     3. Boots up a tcp server to communicate between nodes
+
+//external imports
 #![feature(conservative_impl_trait)]
 #![feature(proc_macro)]
 pub extern crate argparse;
@@ -30,11 +38,13 @@ pub use tokio_core::io::{FramedIo, Io, ReadHalf, WriteHalf};
 pub use tokio_core::net::{TcpListener, TcpStream};
 pub use tokio_core::reactor::{Core, Handle};
 
+//typedefs
 pub type Pid = usize;
 pub type Topology = Vec<(Pid, Pid)>;
 pub type Nodes = HashMap<Pid, (SocketAddr, u16)>;
 pub type Peers = HashMap<Pid, TcpStream>;
 
+//local imports
 pub mod framing_helpers;
 pub mod mutexalgo;
 pub mod parsers;
@@ -42,8 +52,13 @@ pub use framing_helpers::*;
 pub use mutexalgo::*;
 pub use parsers::*;
 
+// ApplicationState
+// Global state of the program. Mutexed
+// files: Map of name => RaymondState of all created Resources
+// cached_peers: Currently unused
+// nodes: A mapping of all pids -> (comm_socket, cli_port)
 struct ApplicationState {
-    files: HashMap<String, RaymondState<String>>, // fname -> contents
+    files: HashMap<String, RaymondState<String>>,
     cached_peers: HashMap<Pid, futures::stream::Sender<ApplicationMessage, io::Error>>,
     nodes: Nodes,
     neighbors: HashSet<Pid>,
@@ -493,7 +508,7 @@ fn ls(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpSt
         return;
     }
     cli_out.write_all(format!("Listing of Active Resources:\n").as_bytes());
-    cli_out.write_all(format!("{:<8} {:<6}\n", "Name", "Holder").as_bytes());
+    cli_out.write_all(format!("{:<8} {:<6}\n", "Name", "Holder\n").as_bytes());
     for (name, filestate) in &appstate.files {
         cli_out.write_all(format!("{:<8} {:<6}\n", name, filestate.holder).as_bytes());
     }
@@ -512,6 +527,7 @@ fn handle_clis_in_seperate_thread(ourpid: Pid, port: u16) {
                     "\tdelete res_name\n",
                     "\tread res_name\n",
                     "\tappend res_name data\n",
+                    "\tls\n"
                 );
                 if let Err(_) = sock.write_all(format!("Welcome to node {}'s management CLI\n{}", ourpid, options).as_bytes()) {
                     return;
