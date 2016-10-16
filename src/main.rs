@@ -305,8 +305,8 @@ fn main() {
     }
 
     handle_clis_in_seperate_thread(pid, own_addr.1);
-
-    let listener = TcpListener::bind(&own_addr.0, &core.handle()).expect("Failed to bind listener.");
+    let bindaddr = SocketAddr::new(IpAddr::from_str("0.0.0.0").unwrap(), own_addr.0.port());
+    let listener = TcpListener::bind(&bindaddr, &core.handle()).expect("Failed to bind listener.");
     let server = {
         let handle = core.handle();
         listener.incoming().for_each(move |(sock, peer_addr)| {
