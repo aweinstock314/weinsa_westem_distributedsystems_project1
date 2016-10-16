@@ -81,11 +81,11 @@ impl ApplicationState {
             println!("ApplicationState::send_message: trying to contact {:?}", addr);
             let sock = TcpStream::connect(&addr.0, h);
             let rw = sock.and_then(move |sock| { split_sock(sock) });
-            let r_sender_writer = rw.and_then(|(r,w)| {
+            let r_sender_writer = rw.and_then(|(r, w)| {
                 let (sender, writer) = make_stream_writer(w);
-                Ok((r,sender, writer))
+                Ok((r, sender, writer))
             }).wait();
-            if let Ok((r,sender,writer)) = r_sender_writer {
+            if let Ok((r, sender, writer)) = r_sender_writer {
                 println!("tcp connection happened");
             } else {
                 println!("tcp connection didn't happen");
@@ -199,8 +199,8 @@ impl FramedIo for ApplicationMessageWriter {
 
 fn get_neighbors(topology: &Topology, pid: Pid) -> HashSet<Pid> {
     topology.iter()
-        .filter(|&&(p1,p2)| { p1 == pid || p2 == pid }) // find entries containing our own pid (symmetric since tree.txt is undirected)
-        .map(|&(p1,p2)| { if p1 == pid { p2 } else { p1 } }) // in each edge, take the vertex which isn't us
+        .filter(|&&(p1, p2)| { p1 == pid || p2 == pid }) // find entries containing our own pid (symmetric since tree.txt is undirected)
+        .map(|&(p1, p2)| { if p1 == pid { p2 } else { p1 } }) // in each edge, take the vertex which isn't us
         .collect()
 }
 
@@ -288,7 +288,7 @@ fn main() {
     }
     debug!("{}, {}, {}", pid, tree_fname, nodes_fname);
 
-    // raw pairs of (pid,pid) edges
+    // raw pairs of (pid, pid) edges
     let topology = run_parser_on_file(&tree_fname, parse_tree).expect(&format!("Couldn't parse {}", tree_fname));
     debug!("topology: {:?}", topology);
     // set of pids which are our neighbors
@@ -299,7 +299,7 @@ fn main() {
     let nodes = run_parser_on_file(&nodes_fname, parse_nodes).expect(&format!("Couldn't parse {}", nodes_fname));
     debug!("nodes: {:?}", nodes);
     // (ip -> pid) mapping
-    let nodes_rev: HashMap<SocketAddr, Pid> = nodes.iter().map(|(&k,&v)| (v.0,k)).collect();
+    let nodes_rev: HashMap<SocketAddr, Pid> = nodes.iter().map(|(&k, &v)| (v.0, k)).collect();
     debug!("nodes_rev: {:?}", nodes_rev);
 
     let own_addr = nodes.get(&pid).expect(&format!("Couldn't find an entry for pid {} in {} ({:?})", pid, nodes_fname, nodes));
@@ -392,7 +392,7 @@ fn main() {
                     trace!("application state after: {:#?}", *appstate);
                     Ok(())
                 });
-                reader.select(writer).map_err(|(e,_)| e)
+                reader.select(writer).map_err(|(e, _)| e)
             });
             handle.spawn(todo.map(|_| ()).map_err(|e| { warn!("An error occurred: {:?}", e); }));
             Ok(())

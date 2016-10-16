@@ -196,7 +196,7 @@ impl<I: FramedIo<In=In, Out=Out>, In, Out> Future for WriteFrame<I, In> where In
         let oldself = mem::replace(&mut self.0, None);
         let (res, newself) = if let Some((mut w, x)) = oldself {
             if let Async::NotReady = w.poll_write() {
-                (Ok(Async::NotReady), Some((w,x)))
+                (Ok(Async::NotReady), Some((w, x)))
             } else { match w.write(x.clone() /* This clone will go away once FramedIo::write returns the original on NotReady */) {
                 Ok(Async::Ready(())) => (Ok(Async::Ready(w)), None),
                 Ok(Async::NotReady) => (Ok(Async::NotReady), Some((w, x))),
