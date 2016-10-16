@@ -108,7 +108,7 @@ impl<Resource: fmt::Debug> fmt::Debug for RaymondState<Resource> {
 pub enum RaymondMessage<Resource> { GrantToken(Resource), Request }
 
 
-// These next 6 functions memerly implement Raymond's algorithm as discussed in class
+// These next 6 functions merely implement Raymond's algorithm as discussed in class
 // Note: They all return a vector of outgoing pid/msg pairs to send
 fn assign_token<Resource: Clone>(state: &mut RaymondState<Resource>) -> Vec<(Pid, RaymondMessage<Resource>)> {
     if state.holder == state.selfpid

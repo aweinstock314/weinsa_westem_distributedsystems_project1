@@ -25,6 +25,7 @@ pub use std::net::{IpAddr, SocketAddr};
 pub use std::str::FromStr;
 pub use std::sync::{Mutex, MutexGuard};
 pub use std::{fmt, io, mem, net, str, thread};
+pub use std::iter::Iterator;
 pub use tokio_core::io::{FramedIo, Io, ReadHalf, WriteHalf};
 pub use tokio_core::net::{TcpListener, TcpStream};
 pub use tokio_core::reactor::{Core, Handle};
@@ -370,6 +371,71 @@ fn main() {
     core.run(server).expect("Failed to run event loop.");
 }
 
+fn create( appstate: &mut ApplicationState, args: Vec<&str>) {
+    println!("Called create function.");
+    if args.len() != 1 {
+        println!("Incorrect number of args: create res_name");
+        return;
+    }
+    let res_name: &str = args[0];
+    match appstate.files.get(res_name) {
+        Some(_) => println!("Cannot create resource {}; already exists!", res_name),
+        None => {
+            println!("Can create!");
+            //create code here
+        },
+    };
+}
+
+fn delete( appstate: &mut ApplicationState, args: Vec<&str>) {
+    println!("Called delete function.");
+    if args.len() != 1 {
+        println!("Incorrect number of args: delete res_name");
+        return;
+    }
+    let res_name: &str = args[0];
+    match appstate.files.get(res_name) {
+        None => println!("Cannot delete resource {}; doesn't exist!", res_name),
+        Some(_) => {
+            println!("Can delete!");
+            //delete code here
+        },
+    };
+}
+
+fn read( appstate: &mut ApplicationState, args: Vec<&str>) {
+    println!("Called read function.");
+    if args.len() != 1 {
+        println!("Incorrect number of args: read res_name");
+        return;
+    }
+    let res_name: &str = args[0];
+    match appstate.files.get(res_name) {
+        None => println!("Cannot read resource {}; doesn't exist!", res_name),
+        Some(_) => {
+            println!("Can read!");
+            //read code here
+        },
+    };
+}
+
+fn append( appstate: &mut ApplicationState, args: Vec<&str>) {
+    println!("Called append function.");
+    if args.len() != 2 {
+        println!("Incorrect number of args: append res_name");
+        return;
+    }
+    let res_name: &str = args[0];
+    let append_value: &str = args[1];
+    match appstate.files.get(res_name) {
+        None => println!("Cannot append resource {}; doesn't exist!", res_name),
+        Some(_) => {
+            println!("Can append!");
+            //append code here
+        },
+    };
+}
+
 fn handle_clis_in_seperate_thread(port: u16) {
     thread::spawn(move || {
         for sock in net::TcpListener::bind(("0.0.0.0", port)).expect("Failed to bind CLI listener.").incoming() {
@@ -377,6 +443,7 @@ fn handle_clis_in_seperate_thread(port: u16) {
                 let addr = sock.peer_addr();
                 println!("Got a CLI client: {:?}", addr);
                 thread::spawn(move || {
+                    print!("--> ");
                     let mut reader = BufReader::new(&sock);
                     loop {
                         let mut line = "".into();
@@ -385,6 +452,16 @@ fn handle_clis_in_seperate_thread(port: u16) {
                             if let Err(_) = reader.get_mut().write_all(format!("echoing: {}", line).as_bytes()) {
                                 break;
                             }
+                            let mut iter = line.split_whitespace();
+                            let mut appstate = get_appstate();
+                            match iter.next() {
+                                Some("create") => create(&mut appstate, iter.collect()),
+                                Some("delete") => delete(&mut appstate, iter.collect()),
+                                Some("read") => read(&mut appstate, iter.collect()),
+                                Some("append") => append(&mut appstate, iter.collect()),
+                                Some(_) => println!("Invalid command {}", 5),
+                                None => continue,
+                            };
                         } else {
                             break;
                         }
