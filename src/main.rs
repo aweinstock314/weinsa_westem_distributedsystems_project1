@@ -46,6 +46,8 @@ struct ApplicationState {
     files: HashMap<String, RaymondState<String>>, // fname -> contents
     cached_peers: HashMap<Pid, futures::stream::Sender<ApplicationMessage, io::Error>>,
     nodes: Nodes,
+    neighbors: HashSet<Pid>,
+    ourpid: Pid,
 }
 
 impl ApplicationState {
@@ -72,7 +74,7 @@ impl ApplicationState {
         // TODO: 1) address the case where we have a connection cached 2) maybe cache the reader? start a readloop? 3) actually send the message
         futures::lazy(|| Ok(()))
     }*/
-    fn send_message_sync(&mut self, pid: Pid, msg: ApplicationMessage) -> Result<(), io::Error> {
+    fn send_message_sync(&self, pid: Pid, msg: ApplicationMessage) -> Result<(), io::Error> {
         println!("ApplicationState::send_message_sync: trying to send {:?} to {}", msg, pid);
         let addr = self.nodes.get(&pid).expect(&format!("Tried to contact pid {}, but they don't have a nodes.txt entry (nodes: {:?})", pid, self.nodes));
         let mut sock = try!(net::TcpStream::connect(addr.0));
@@ -182,6 +184,8 @@ lazy_static! {
         files: HashMap::new(),
         cached_peers: HashMap::new(),
         nodes: HashMap::new(),
+        neighbors: HashSet::new(),
+        ourpid: 0,
     });
 }
 
@@ -279,6 +283,8 @@ fn main() {
     {
         let mut appstate = get_appstate();
         appstate.nodes = nodes.clone();
+        appstate.neighbors = own_neighbors.clone();
+        appstate.ourpid = pid;
     }
 
     handle_clis_in_seperate_thread(pid, own_addr.1);
@@ -374,38 +380,42 @@ fn main() {
 fn create(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
     cli_out.write_all(format!("Called create function.\n").as_bytes());
     if args.len() != 1 {
-        cli_out.write_all(format!("Incorrect number of args: create res_name.\n").as_bytes());
+        cli_out.write_all(format!("Incorrect number of args: create res_name\n").as_bytes());
         return;
     }
     let res_name: &str = args[0];
-    match appstate.files.get(res_name) {
-        Some(_) => {
-            cli_out.write_all(format!("Cannot create resource {}; already exists!\n", res_name).as_bytes());
-        },
-        None => {
-            cli_out.write_all(format!("Can create!\n").as_bytes());
-            //create code here
-
-        },
-    };
+    let ourpid = appstate.ourpid;
+    if let Some(_) = appstate.files.get(res_name) {
+        cli_out.write_all(format!("Cannot create resource {}; already exists!\n", res_name).as_bytes());
+    } else {
+        cli_out.write_all(format!("Can create!\n").as_bytes());
+        let appmsg = ApplicationMessage {
+            fname: res_name.into(),
+            ty: ApplicationMessageType::CreateFile,
+        };
+        appstate.send_message_sync(ourpid, appmsg);
+    }
 }
 
 fn delete(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
     cli_out.write_all(format!("Called delete function.\n").as_bytes());
     if args.len() != 1 {
-        cli_out.write_all(format!("Incorrect number of args: delete res_name.\n").as_bytes());
+        cli_out.write_all(format!("Incorrect number of args: delete res_name\n").as_bytes());
         return;
     }
     let res_name: &str = args[0];
-    match appstate.files.get(res_name) {
-        None => {
-            cli_out.write_all(format!("Cannot delete resource {}; doesn't exist!\n", res_name).as_bytes());
-        },
-        Some(_) => {
-            cli_out.write_all(format!("Can delete!\n").as_bytes());
-            //delete code here
-        },
-    };
+    let ourpid = appstate.ourpid;
+    if let Some(_) = appstate.files.get(res_name) {
+        cli_out.write_all(format!("Can delete!\n").as_bytes());
+        // TODO: maybe acquire a lock first?
+        let appmsg = ApplicationMessage {
+            fname: res_name.into(),
+            ty: ApplicationMessageType::DeleteFile,
+        };
+        appstate.send_message_sync(ourpid, appmsg);
+    } else {
+        cli_out.write_all(format!("Cannot delete resource {}; doesn't exist!\n", res_name).as_bytes());
+    }
 }
 
 fn read(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
@@ -415,15 +425,25 @@ fn read(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::Tcp
         return;
     }
     let res_name: &str = args[0];
-    match appstate.files.get(res_name) {
-        None => {
-            cli_out.write_all(format!("Cannot read resource {}; doesn't exist!\n", res_name).as_bytes());
-        },
-        Some(_) => {
-            cli_out.write_all(format!("Can read!\n").as_bytes());
-            //read code here
-        },
+    let mut tosend = if let Some(raystate) = appstate.files.get_mut(res_name) {
+        cli_out.write_all(format!("Can read!\n").as_bytes());
+        let (resource_future, tosend) = raystate.request();
+        // TODO: figure out a way to put the resource_future onto the event loop. Core::remote?
+        resource_future.map(move |resource| {
+            // TODO: things with resource
+        });
+        tosend
+    } else {
+        cli_out.write_all(format!("Cannot read resource {}; doesn't exist!\n", res_name).as_bytes());
+        vec![]
     };
+    for (pid, raymsg) in tosend.drain(..) {
+        let appmsg = ApplicationMessage {
+            fname: res_name.into(),
+            ty: ApplicationMessageType::Raymond(raymsg),
+        };
+        appstate.send_message_sync(pid, appmsg);
+    }
 }
 
 
@@ -434,15 +454,24 @@ fn append(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::T
         return;
     }
     let res_name: &str = args[0];
-    match appstate.files.get(res_name) {
-        None => {
-            cli_out.write_all(format!("Cannot append resource {}; doesn't exist!\n", res_name).as_bytes());
-        },
-        Some(_) => {
-            cli_out.write_all(format!("Can append!\n").as_bytes());
-            //append code here
-        },
+    let mut tosend = if let Some(raystate) = appstate.files.get_mut(res_name) {
+        cli_out.write_all(format!("Can append!\n").as_bytes());
+        let (resource_future, tosend) = raystate.request();
+        resource_future.map(move |resource| {
+            // TODO: things with resource
+        });
+        tosend
+    } else {
+        cli_out.write_all(format!("Cannot append resource {}; doesn't exist!\n", res_name).as_bytes());
+        vec![]
     };
+    for (pid, raymsg) in tosend.drain(..) {
+        let appmsg = ApplicationMessage {
+            fname: res_name.into(),
+            ty: ApplicationMessageType::Raymond(raymsg),
+        };
+        appstate.send_message_sync(pid, appmsg);
+    }
 }
 
 fn handle_clis_in_seperate_thread(ourpid: Pid, port: u16) {
