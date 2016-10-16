@@ -51,7 +51,7 @@ impl ApplicationState {
     fn cache_peer(&mut self, pid: Pid, sender: futures::stream::Sender<ApplicationMessage, io::Error>) {
         self.cached_peers.entry(pid).or_insert(sender);
     }
-    fn send_message(&mut self, pid: Pid, msg: ApplicationMessage, h: &Handle) -> impl Future<Item=(), Error=io::Error> {
+    /*fn send_message(&mut self, pid: Pid, msg: ApplicationMessage, h: &Handle) -> impl Future<Item=(), Error=io::Error> {
         println!("ApplicationState::send_message: trying to send {:?}", msg);
         if let None = self.cached_peers.get(&pid) {
             let addr = self.nodes.get(&pid).expect(&format!("Tried to contact pid {}, but they don't have a nodes.txt entry (nodes: {:?})", pid, self.nodes));
@@ -70,6 +70,17 @@ impl ApplicationState {
         }
         // TODO: 1) address the case where we have a connection cached 2) maybe cache the reader? start a readloop? 3) actually send the message
         futures::lazy(|| Ok(()))
+    }*/
+    fn send_message_sync(&mut self, pid: Pid, msg: ApplicationMessage) -> Result<(), io::Error> {
+        println!("ApplicationState::send_message_sync: trying to send {:?} to {}", msg, pid);
+        let addr = self.nodes.get(&pid).expect(&format!("Tried to contact pid {}, but they don't have a nodes.txt entry (nodes: {:?})", pid, self.nodes));
+        let mut sock = try!(net::TcpStream::connect(addr.0));
+        let serialized_message = try!(serde_json::to_string(&msg).map_err(|e| io::Error::new(io::ErrorKind::Other, e)));
+        let mut buf = vec![];
+        try!(buf.write_u64::<LittleEndian>(serialized_message.len() as u64));
+        buf.extend_from_slice(serialized_message.as_bytes());
+        try!(sock.write_all(&buf));
+        Ok(())
     }
 }
 
@@ -282,7 +293,6 @@ fn main() {
                     println!("{} is our neighbor", peer_pid);
                     let rw = split_sock(sock);
                     let neighbors = own_neighbors.clone();
-                    let handle2 = handle.clone();
                     let todo = rw.and_then(move |(r, w)| {
                         let (sender, writer) = make_stream_writer(w);
                         let writer = writer.for_each(|()| Ok(())).map_err(|e| {
@@ -300,19 +310,29 @@ fn main() {
                                     appstate.files.insert(msg.fname.clone(), RaymondState::new(peer_pid, pid));
                                     for neighbor in neighbors {
                                         if neighbor != peer_pid {
-                                            appstate.send_message(neighbor, msg.clone(), &handle2);
+                                            if let Err(e) = appstate.send_message_sync(neighbor, msg.clone()) {
+                                                println!("error in CreateFile propagation: {:?}", e);
+                                            }
                                         }
                                     }
                                 },
                                 ApplicationMessageType::Raymond(raymsg) => {
-                                    if let Some(mut raystate) = appstate.files.get_mut(&msg.fname) {
+                                    let mut tosend = if let Some(mut raystate) = appstate.files.get_mut(&msg.fname) {
                                         let pc = PeerContext { selfpid: pid, peerpid: peer_pid, neighbors: &neighbors };
-                                        let tosend = raystate.handle_message(&pc, raymsg);
-                                        println!("tosend: {:?}", tosend);
-                                        // TODO: sending things
-                                        // store an MPSC sender in the global appstate?
+                                        raystate.handle_message(&pc, raymsg)
                                     } else {
                                         println!("warning: got a raymond message for a nonexistant file: {}", msg.fname);
+                                        vec![]
+                                    };
+                                    println!("tosend: {:?}", tosend);
+                                    for (neighbor, raymsg) in tosend.drain(..) {
+                                        let appmsg = ApplicationMessage {
+                                            fname: msg.fname.clone(),
+                                            ty: ApplicationMessageType::Raymond(raymsg),
+                                        };
+                                        if let Err(e) = appstate.send_message_sync(neighbor, appmsg) {
+                                            println!("error in Raymond sending: {:?}", e);
+                                        }
                                     }
                                 },
                                 ApplicationMessageType::DeleteFile => {
