@@ -185,9 +185,9 @@ impl<Resource: Clone + Send + 'static> MutexAlgorithm<Resource, RaymondMessage<R
     // and return the msgs to be sent as well as the oneshot callback
     fn request(&mut self) -> (mpsc::Receiver<Resource>, Vec<(Pid, RaymondMessage<Resource>)>) {
         println!("MutexAlg: Request");
-        let tmp = request_token(self);
         let (complete, oneshot) = mpsc::channel::<Resource>();
         self.resolvers.push(complete);
+        let tmp = request_token(self);
         (oneshot, tmp)
     }
     fn release(&mut self) -> Vec<(Pid, RaymondMessage<Resource>)> {

@@ -395,13 +395,14 @@ fn main() {
     core.run(server).expect("Failed to run event loop.");
 }
 
-fn create(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
+fn create(args: Vec<&str>, cli_out: &mut net::TcpStream) {
     cli_out.write_all(format!("Called create function.\n").as_bytes()).unwrap();
     if args.len() != 1 {
         cli_out.write_all(format!("Incorrect number of args: create res_name\n").as_bytes()).unwrap();
         return;
     }
     let res_name: &str = args[0];
+    let appstate = get_appstate();
     let ourpid = appstate.ourpid;
     if let Some(_) = appstate.files.get(res_name) {
         cli_out.write_all(format!("Cannot create resource {}; already exists!\n", res_name).as_bytes()).unwrap();
@@ -416,13 +417,14 @@ fn create(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::T
     }
 }
 
-fn delete(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
+fn delete(args: Vec<&str>, cli_out: &mut net::TcpStream) {
     cli_out.write_all(format!("Called delete function.\n").as_bytes()).unwrap();
     if args.len() != 1 {
         cli_out.write_all(format!("Incorrect number of args: delete res_name\n").as_bytes()).unwrap();
         return;
     }
     let res_name: &str = args[0];
+    let appstate = get_appstate();
     let ourpid = appstate.ourpid;
     if let Some(_) = appstate.files.get(res_name) {
         cli_out.write_all(format!("Can delete!\n").as_bytes()).unwrap();
@@ -438,13 +440,14 @@ fn delete(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::T
     }
 }
 
-fn read(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
+fn read(args: Vec<&str>, cli_out: &mut net::TcpStream) {
     cli_out.write_all(format!("Called read function.\n").as_bytes()).unwrap();
     if args.len() != 1 {
         cli_out.write_all(format!("Incorrect number of args: read res_name\n").as_bytes()).unwrap();
         return;
     }
     let res_name: &str = args[0];
+    let mut appstate = get_appstate();
     let ourpid = appstate.ourpid;
     if let Some((rchan, mut tosend)) = if let Some(raystate) = appstate.files.get_mut(res_name) {
         cli_out.write_all(format!("Attempting to read the resource:\n").as_bytes()).unwrap();
@@ -474,16 +477,18 @@ fn read(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::Tcp
             appstate.send_message_sync(pid, appmsg).unwrap();
         }
     }
+    println!("Done with read lock");
 }
 
 
-fn append(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
+fn append(args: Vec<&str>, cli_out: &mut net::TcpStream) {
     cli_out.write_all(format!("Called append function.\n").as_bytes()).unwrap();
     if args.len() != 1 {
         cli_out.write_all(format!("Incorrect number of args: append res_name data\n").as_bytes()).unwrap();
         return;
     }
     let res_name: &str = args[0];
+    let mut appstate = get_appstate();
     if let Some((rchan, mut tosend)) = if let Some(raystate) = appstate.files.get_mut(res_name) {
         cli_out.write_all(format!("Can append!\n").as_bytes()).unwrap();
         Some(raystate.request())
@@ -503,11 +508,12 @@ fn append(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::T
     }
 }
 
-fn ls(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
+fn ls(args: Vec<&str>, cli_out: &mut net::TcpStream) {
     if args.len() != 0 {
         cli_out.write_all(format!("Incorrect number of args: ls\n").as_bytes()).unwrap();
         return;
     }
+    let appstate = get_appstate();
     if appstate.files.len() == 0 {
         cli_out.write_all(format!("No Active Resources Found.\n").as_bytes()).unwrap();
         return;
@@ -548,13 +554,12 @@ fn handle_clis_in_seperate_thread(ourpid: Pid, port: u16) {
                                 break;
                             }
                             let mut iter = line.split_whitespace();
-                            let mut appstate = get_appstate();
                             match iter.next() {
-                                Some("create") => create(&mut appstate, iter.collect(), reader.get_mut()),
-                                Some("delete") => delete(&mut appstate, iter.collect(), reader.get_mut()),
-                                Some("read") => read(&mut appstate, iter.collect(), reader.get_mut()),
-                                Some("append") => append(&mut appstate, iter.collect(), reader.get_mut()),
-                                Some("ls") => ls(&mut appstate, iter.collect(), reader.get_mut()),
+                                Some("create") => create(iter.collect(), reader.get_mut()),
+                                Some("delete") => delete(iter.collect(), reader.get_mut()),
+                                Some("read") => read(iter.collect(), reader.get_mut()),
+                                Some("append") => append(iter.collect(), reader.get_mut()),
+                                Some("ls") => ls(iter.collect(), reader.get_mut()),
                                 Some(x) => {
                                     reader.get_mut().write_all(format!("Invalid command {}\n", x).as_bytes()).unwrap();
                                 },
