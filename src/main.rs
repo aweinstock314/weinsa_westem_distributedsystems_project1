@@ -476,6 +476,22 @@ fn append(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::T
     }
 }
 
+fn ls(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
+    if args.len() != 0 {
+        cli_out.write_all(format!("Incorrect number of args: ls\n").as_bytes());
+        return;
+    }
+    if appstate.files.len() == 0 {
+        cli_out.write_all(format!("No Active Resources Found.\n").as_bytes());
+        return;
+    }
+    cli_out.write_all(format!("Listing of Active Resources:\n").as_bytes());
+    cli_out.write_all(format!("{:<8} {:<6}\n", "Name", "Holder").as_bytes());
+    for (name, filestate) in &appstate.files {
+        cli_out.write_all(format!("{:<8} {:<6}\n", name, filestate.holder).as_bytes());
+    }
+}
+
 fn handle_clis_in_seperate_thread(ourpid: Pid, port: u16) {
     thread::spawn(move || {
         let listener = net::TcpListener::bind(("0.0.0.0", port)).expect("Failed to bind CLI listener.");
@@ -510,6 +526,7 @@ fn handle_clis_in_seperate_thread(ourpid: Pid, port: u16) {
                                 Some("delete") => delete(&mut appstate, iter.collect(), reader.get_mut()),
                                 Some("read") => read(&mut appstate, iter.collect(), reader.get_mut()),
                                 Some("append") => append(&mut appstate, iter.collect(), reader.get_mut()),
+                                Some("ls") => ls(&mut appstate, iter.collect(), reader.get_mut()),
                                 Some(x) => {
                                     reader.get_mut().write_all(format!("Invalid command {}\n", x).as_bytes());
                                 },
