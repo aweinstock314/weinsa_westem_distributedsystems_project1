@@ -447,14 +447,16 @@ fn read(args: Vec<&str>, cli_out: &mut net::TcpStream) {
         return;
     }
     let res_name: &str = args[0];
-    let mut appstate = get_appstate();
-    let ourpid = appstate.ourpid;
-    if let Some((rchan, mut tosend)) = if let Some(raystate) = appstate.files.get_mut(res_name) {
-        cli_out.write_all(format!("Attempting to read the resource:\n").as_bytes()).unwrap();
-        Some(raystate.request())
-    } else {
-        cli_out.write_all(format!("Cannot read resource {}; doesn't exist!\n", res_name).as_bytes()).unwrap();
-        None
+    let ourpid = get_appstate().ourpid;
+    if let Some((rchan, mut tosend)) = {
+        let mut appstate = get_appstate();
+        if let Some(raystate) = appstate.files.get_mut(res_name) {
+            cli_out.write_all(format!("Attempting to read the resource:\n").as_bytes()).unwrap();
+            Some(raystate.request())
+        } else {
+            cli_out.write_all(format!("Cannot read resource {}; doesn't exist!\n", res_name).as_bytes()).unwrap();
+            None
+        }
     } {
         for (pid, raymsg) in tosend.drain(..) {
             let appmsg = ApplicationMessage {
@@ -462,10 +464,12 @@ fn read(args: Vec<&str>, cli_out: &mut net::TcpStream) {
                 sender: ourpid,
                 ty: ApplicationMessageType::Raymond(raymsg),
             };
+            let appstate = get_appstate();
             appstate.send_message_sync(pid, appmsg).unwrap();
         }
         let resource = rchan.recv().unwrap();
         println!("got resource: {}", resource);
+        let mut appstate = get_appstate();
         cli_out.write_all(format!("Contents of resource {:?}: {}\n", res_name, resource).as_bytes()).unwrap();
         let mut tosend = appstate.files.get_mut(res_name).unwrap().release();
         for (pid, raymsg) in tosend.drain(..) {
