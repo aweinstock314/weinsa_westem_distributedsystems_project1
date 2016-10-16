@@ -46,9 +46,11 @@ pub type Nodes = HashMap<Pid, (SocketAddr, u16)>;
 pub type Peers = HashMap<Pid, TcpStream>;
 
 //local imports
+pub mod cli_helpers;
 pub mod framing_helpers;
 pub mod mutexalgo;
 pub mod parsers;
+pub use cli_helpers::*;
 pub use framing_helpers::*;
 pub use mutexalgo::*;
 pub use parsers::*;
@@ -58,12 +60,12 @@ pub use parsers::*;
 // files: Map of name => RaymondState of all created Resources
 // cached_peers: Currently unused
 // nodes: A mapping of all pids -> (comm_socket, cli_port)
-struct ApplicationState {
-    files: HashMap<String, RaymondState<String>>,
-    cached_peers: HashMap<Pid, futures::stream::Sender<ApplicationMessage, io::Error>>,
-    nodes: Nodes,
-    neighbors: HashSet<Pid>,
-    ourpid: Pid,
+pub struct ApplicationState {
+    pub files: HashMap<String, RaymondState<String>>,
+    pub cached_peers: HashMap<Pid, futures::stream::Sender<ApplicationMessage, io::Error>>,
+    pub nodes: Nodes,
+    pub neighbors: HashSet<Pid>,
+    pub ourpid: Pid,
 }
 
 impl ApplicationState {
@@ -108,19 +110,22 @@ impl fmt::Debug for ApplicationState {
         fmt.debug_struct("ApplicationState")
             .field("files", &self.files)
             .field("cached_peers", &self.cached_peers.iter().map(|(&k, _)| k).collect::<HashSet<Pid>>())
+            .field("nodes", &self.nodes)
+            .field("neighbors", &self.neighbors)
+            .field("ourpid", &self.ourpid)
             .finish()
     }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct ApplicationMessage {
+pub struct ApplicationMessage {
     fname: String,
     sender: Pid,
     ty: ApplicationMessageType,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-enum ApplicationMessageType {
+pub enum ApplicationMessageType {
     CreateFile,
     Raymond(RaymondMessage<String>),
     DeleteFile, // should only be issued after a lock is held
@@ -206,7 +211,7 @@ lazy_static! {
     });
 }
 
-fn get_appstate<'a>() -> MutexGuard<'a, ApplicationState> {
+pub fn get_appstate<'a>() -> MutexGuard<'a, ApplicationState> {
     APPSTATE.lock().expect("Failed to acquire APPSTATE lock.")
 }
 
@@ -393,220 +398,4 @@ fn main() {
         })
     };
     core.run(server).expect("Failed to run event loop.");
-}
-
-fn create(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
-    try!(cli_out.write_all(format!("Called create function.\n").as_bytes()));
-    if args.len() != 1 {
-        try!(cli_out.write_all(format!("Incorrect number of args: create res_name\n").as_bytes()));
-        return Ok(());
-    }
-    let res_name: &str = args[0];
-    let appstate = get_appstate();
-    let ourpid = appstate.ourpid;
-    if let Some(_) = appstate.files.get(res_name) {
-        try!(cli_out.write_all(format!("Cannot create resource {}; already exists!\n", res_name).as_bytes()));
-    } else {
-        try!(cli_out.write_all(format!("Can create!\n").as_bytes()));
-        let appmsg = ApplicationMessage {
-            fname: res_name.into(),
-            sender: ourpid,
-            ty: ApplicationMessageType::CreateFile,
-        };
-        appstate.send_message_sync(ourpid, appmsg).unwrap();
-    }
-    Ok(())
-}
-
-fn delete(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
-    try!(cli_out.write_all(format!("Called delete function.\n").as_bytes()));
-    if args.len() != 1 {
-        try!(cli_out.write_all(format!("Incorrect number of args: delete res_name\n").as_bytes()));
-        return Ok(());
-    }
-    let res_name: &str = args[0];
-    let appstate = get_appstate();
-    let ourpid = appstate.ourpid;
-    if let Some(_) = appstate.files.get(res_name) {
-        try!(cli_out.write_all(format!("Can delete!\n").as_bytes()));
-        // TODO: maybe acquire a lock first?
-        let appmsg = ApplicationMessage {
-            fname: res_name.into(),
-            sender: ourpid,
-            ty: ApplicationMessageType::DeleteFile,
-        };
-        appstate.send_message_sync(ourpid, appmsg).unwrap();
-    } else {
-        try!(cli_out.write_all(format!("Cannot delete resource {}; doesn't exist!\n", res_name).as_bytes()));
-    }
-    Ok(())
-}
-
-fn read(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
-    try!(cli_out.write_all(format!("Called read function.\n").as_bytes()));
-    if args.len() != 1 {
-        try!(cli_out.write_all(format!("Incorrect number of args: read res_name\n").as_bytes()));
-        return Ok(());
-    }
-    let res_name: &str = args[0];
-    let ourpid = get_appstate().ourpid;
-    if let Some((rchan, mut tosend)) = {
-        let mut appstate = get_appstate();
-        if let Some(raystate) = appstate.files.get_mut(res_name) {
-            try!(cli_out.write_all(format!("Attempting to read the resource:\n").as_bytes()));
-            Some(raystate.request())
-        } else {
-            try!(cli_out.write_all(format!("Cannot read resource {}; doesn't exist!\n", res_name).as_bytes()));
-            None
-        }
-    } {
-        for (pid, raymsg) in tosend.drain(..) {
-            let appmsg = ApplicationMessage {
-                fname: res_name.into(),
-                sender: ourpid,
-                ty: ApplicationMessageType::Raymond(raymsg),
-            };
-            let appstate = get_appstate();
-            appstate.send_message_sync(pid, appmsg).unwrap();
-        }
-        let resource = rchan.recv().unwrap();
-        println!("read: Got resource: {}", resource);
-        let mut appstate = get_appstate();
-        try!(cli_out.write_all(format!("Contents of resource {:?}: {}\n", res_name, resource).as_bytes()));
-        let mut tosend = appstate.files.get_mut(res_name).unwrap().release();
-        for (pid, raymsg) in tosend.drain(..) {
-            let appmsg = ApplicationMessage {
-                fname: res_name.into(),
-                sender: ourpid,
-                ty: ApplicationMessageType::Raymond(raymsg),
-            };
-            appstate.send_message_sync(pid, appmsg).unwrap();
-        }
-    }
-    println!("Done with read lock");
-    Ok(())
-}
-
-fn append(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
-    try!(cli_out.write_all(format!("Called append function.\n").as_bytes()));
-    if args.len() != 2 {
-        try!(cli_out.write_all(format!("Incorrect number of args: append res_name data\n").as_bytes()));
-        return Ok(());
-    }
-    let res_name: &str = args[0];
-    let ourpid = get_appstate().ourpid;
-    if let Some(mut tosend) = {
-        if let Some((rchan, mut tosend)) = {
-            let mut appstate = get_appstate();
-            if let Some(raystate) = appstate.files.get_mut(res_name) {
-                try!(cli_out.write_all(format!("Can append!\n").as_bytes()));
-                Some(raystate.request())
-            } else {
-                try!(cli_out.write_all(format!("Cannot append resource {}; doesn't exist!\n", res_name).as_bytes()));
-                None
-            }
-        } {
-            for (pid, raymsg) in tosend.drain(..) {
-                let appmsg = ApplicationMessage {
-                    fname: res_name.into(),
-                    sender: ourpid,
-                    ty: ApplicationMessageType::Raymond(raymsg),
-                };
-                let appstate = get_appstate();
-                appstate.send_message_sync(pid, appmsg).unwrap();
-            }
-            let mut resource = rchan.recv().unwrap();
-            println!("append: Got resource: {}", resource);
-            resource.extend(args[1].chars());
-            println!("append: Updated resource: {}", resource);
-            let mut appstate = get_appstate();
-            let mut raystate = appstate.files.get_mut(res_name).unwrap();
-            raystate.resource = Some(resource);
-            Some(raystate.release())
-        } else {
-            None
-        }
-    } {
-        let appstate = get_appstate();
-        for (pid, raymsg) in tosend.drain(..) {
-            let appmsg = ApplicationMessage {
-                fname: res_name.into(),
-                sender: ourpid,
-                ty: ApplicationMessageType::Raymond(raymsg),
-            };
-            appstate.send_message_sync(pid, appmsg).unwrap();
-        }
-    }
-    Ok(())
-}
-
-fn ls(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
-    if args.len() != 0 {
-        try!(cli_out.write_all(format!("Incorrect number of args: ls\n").as_bytes()));
-        return Ok(());
-    }
-    let appstate = get_appstate();
-    if appstate.files.len() == 0 {
-        try!(cli_out.write_all(format!("No Active Resources Found.\n").as_bytes()));
-        return Ok(());
-    }
-    try!(cli_out.write_all(format!("Listing of Active Resources:\n").as_bytes()));
-    try!(cli_out.write_all(format!("{:<8} {:<6}\n", "Name", "Holder\n").as_bytes()));
-    for (name, filestate) in &appstate.files {
-        try!(cli_out.write_all(format!("{:<8} {:<6}\n", name, filestate.holder).as_bytes()));
-    }
-    Ok(())
-}
-
-fn handle_clis_in_seperate_thread(ourpid: Pid, port: u16) {
-    thread::spawn(move || {
-        let listener = net::TcpListener::bind(("0.0.0.0", port)).expect("Failed to bind CLI listener.");
-        println!("Management CLI bound to port {}", port);
-        for sock in listener.incoming() {
-            if let Ok(mut sock) = sock {
-                let addr = sock.peer_addr();
-                println!("Got a CLI client: {:?}", addr);
-                let options = concat!("Available commands:\n",
-                    "\tcreate res_name\n",
-                    "\tdelete res_name\n",
-                    "\tread res_name\n",
-                    "\tappend res_name data\n",
-                    "\tls\n"
-                );
-                if let Err(_) = sock.write_all(format!("Welcome to node {}'s management CLI\n{}", ourpid, options).as_bytes()) {
-                    return;
-                }
-                thread::spawn(move || {
-                    let mut reader = BufReader::new(sock);
-                    loop {
-                        reader.get_mut().write_all(("--> ").as_bytes()).unwrap();
-                        let mut line = "".into();
-                        if let Ok(_) = reader.read_line(&mut line) {
-                            println!("Got line from {:?}: {}", addr, line);
-                            if let Err(_) = reader.get_mut().write_all(format!("echoing: {}\n", line).as_bytes()) {
-                                break;
-                            }
-                            let mut iter = line.split_whitespace();
-                            if let Err(e) = match iter.next() {
-                                Some("create") => create(iter.collect(), reader.get_mut()),
-                                Some("delete") => delete(iter.collect(), reader.get_mut()),
-                                Some("read") => read(iter.collect(), reader.get_mut()),
-                                Some("append") => append(iter.collect(), reader.get_mut()),
-                                Some("ls") => ls(iter.collect(), reader.get_mut()),
-                                Some(x) => {
-                                    reader.get_mut().write_all(format!("Invalid command {}\n", x).as_bytes())
-                                },
-                                None => continue,
-                            } {
-                                println!("An error ocurred while interacting with {:?}: {:?}", addr, e);
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-                });
-            }
-        }
-    });
 }
