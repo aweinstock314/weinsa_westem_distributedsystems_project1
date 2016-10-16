@@ -23,7 +23,7 @@ pub use std::io::BufReader;
 pub use std::io::prelude::*;
 pub use std::net::{IpAddr, SocketAddr};
 pub use std::str::FromStr;
-pub use std::sync::{Mutex, MutexGuard};
+pub use std::sync::{mpsc, Mutex, MutexGuard};
 pub use std::{fmt, io, mem, net, str, thread};
 pub use std::iter::Iterator;
 pub use tokio_core::io::{FramedIo, Io, ReadHalf, WriteHalf};
@@ -425,25 +425,34 @@ fn read(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::Tcp
         return;
     }
     let res_name: &str = args[0];
-    let mut tosend = if let Some(raystate) = appstate.files.get_mut(res_name) {
-        cli_out.write_all(format!("Can read!\n").as_bytes());
-        let (resource_future, tosend) = raystate.request();
-        // TODO: figure out a way to put the resource_future onto the event loop. Core::remote?
-        resource_future.map(move |resource| {
-            // TODO: things with resource
-        });
-        tosend
+    let ourpid = appstate.ourpid;
+    if let Some((rchan, mut tosend)) = if let Some(raystate) = appstate.files.get_mut(res_name) {
+        cli_out.write_all(format!("Attempting to read the resource:\n").as_bytes());
+        Some(raystate.request())
     } else {
         cli_out.write_all(format!("Cannot read resource {}; doesn't exist!\n", res_name).as_bytes());
-        vec![]
-    };
-    for (pid, raymsg) in tosend.drain(..) {
-        let appmsg = ApplicationMessage {
-            fname: res_name.into(),
-            sender: pid,
-            ty: ApplicationMessageType::Raymond(raymsg),
-        };
-        appstate.send_message_sync(pid, appmsg);
+        None
+    } {
+        for (pid, raymsg) in tosend.drain(..) {
+            let appmsg = ApplicationMessage {
+                fname: res_name.into(),
+                sender: ourpid,
+                ty: ApplicationMessageType::Raymond(raymsg),
+            };
+            appstate.send_message_sync(pid, appmsg);
+        }
+        let resource = rchan.recv().unwrap();
+        println!("got resource: {}", resource);
+        cli_out.write_all(format!("Contents of resource {:?}: {}\n", res_name, resource).as_bytes());
+        let mut tosend = appstate.files.get_mut(res_name).unwrap().release();
+        for (pid, raymsg) in tosend.drain(..) {
+            let appmsg = ApplicationMessage {
+                fname: res_name.into(),
+                sender: ourpid,
+                ty: ApplicationMessageType::Raymond(raymsg),
+            };
+            appstate.send_message_sync(pid, appmsg);
+        }
     }
 }
 
@@ -455,24 +464,22 @@ fn append(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::T
         return;
     }
     let res_name: &str = args[0];
-    let mut tosend = if let Some(raystate) = appstate.files.get_mut(res_name) {
+    if let Some((rchan, mut tosend)) = if let Some(raystate) = appstate.files.get_mut(res_name) {
         cli_out.write_all(format!("Can append!\n").as_bytes());
-        let (resource_future, tosend) = raystate.request();
-        resource_future.map(move |resource| {
-            // TODO: things with resource
-        });
-        tosend
+        Some(raystate.request())
     } else {
         cli_out.write_all(format!("Cannot append resource {}; doesn't exist!\n", res_name).as_bytes());
-        vec![]
-    };
-    for (pid, raymsg) in tosend.drain(..) {
-        let appmsg = ApplicationMessage {
-            fname: res_name.into(),
-            sender: pid,
-            ty: ApplicationMessageType::Raymond(raymsg),
-        };
-        appstate.send_message_sync(pid, appmsg);
+        None
+    } {
+        for (pid, raymsg) in tosend.drain(..) {
+            let appmsg = ApplicationMessage {
+                fname: res_name.into(),
+                sender: pid,
+                ty: ApplicationMessageType::Raymond(raymsg),
+            };
+            appstate.send_message_sync(pid, appmsg);
+        }
+        let resource = rchan.recv().unwrap();
     }
 }
 

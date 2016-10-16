@@ -51,7 +51,7 @@ pub struct PeerContext<'a> {
 //   Takes in a PeerContext (to get the pid of the msg sender), as well as the msg
 //   Returns an outgoing msg vector
 pub trait MutexAlgorithm<Resource, Message> {
-    fn request(&mut self) -> (Box<Future<Item=Resource, Error=futures::Canceled> + Send>, Vec<(Pid, Message)>);
+    fn request(&mut self) -> (mpsc::Receiver<Resource>, Vec<(Pid, Message)>);
     fn release(&mut self) -> Vec<(Pid, Message)>;
     fn handle_message(&mut self, &PeerContext, Message) -> Vec<(Pid, Message)>;
 }
@@ -69,7 +69,7 @@ pub struct RaymondState<Resource> {
     pub holder: Pid,
     pub requests: VecDeque<Pid>, // enqueue with push_back, dequeue with pop_front
     pub asked: bool,
-    pub resolvers: Vec<futures::Complete<Resource>>
+    pub resolvers: Vec<mpsc::Sender<Resource>>
 }
 // Constructor
 impl<Resource> RaymondState<Resource> {
@@ -121,7 +121,7 @@ fn assign_token<Resource: Clone>(state: &mut RaymondState<Resource>) -> Vec<(Pid
             state.using_resource = true;
             // Using the resource
             for resolver in state.resolvers.drain(..) {
-                resolver.complete(state.resource.clone().unwrap());
+                resolver.send(state.resource.clone().unwrap());
             }
         } else {
             return vec![(state.holder, RaymondMessage::GrantToken(state.resource.clone().unwrap()))];
@@ -176,11 +176,11 @@ fn receive_token<Resource: Clone>(state: &mut RaymondState<Resource>, r: Resourc
 impl<Resource: Clone + Send + 'static> MutexAlgorithm<Resource, RaymondMessage<Resource>> for RaymondState<Resource> {
     // request the token, stash the futures value in resolvers where the result will eventually go
     // and return the msgs to be sent as well as the oneshot callback
-    fn request(&mut self) -> (Box<Future<Item=Resource, Error=futures::Canceled> + Send>, Vec<(Pid, RaymondMessage<Resource>)>) {
+    fn request(&mut self) -> (mpsc::Receiver<Resource>, Vec<(Pid, RaymondMessage<Resource>)>) {
         let tmp = request_token(self);
-        let (complete, oneshot) = futures::oneshot::<Resource>(); 
+        let (complete, oneshot) = mpsc::channel::<Resource>();
         self.resolvers.push(complete);
-        (Box::new(oneshot), tmp)
+        (oneshot, tmp)
     }
     fn release(&mut self) -> Vec<(Pid, RaymondMessage<Resource>)> {
         release_token(self)
