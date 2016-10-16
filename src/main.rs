@@ -95,7 +95,8 @@ impl ApplicationState {
         futures::lazy(|| Ok(()))
     }*/
     fn send_message_sync(&self, pid: Pid, msg: ApplicationMessage) -> Result<(), io::Error> {
-        trace!("ApplicationState::send_message_sync: trying to send {:?} to {}", msg, pid);
+        trace!("In ApplicationState::send_message_sync");
+        info!("About to send {:?} to {}", msg, pid);
         let addr = self.nodes.get(&pid).expect(&format!("Tried to contact pid {}, but they don't have a nodes.txt entry (nodes: {:?})", pid, self.nodes));
         let mut sock = try!(net::TcpStream::connect(addr.0));
         let serialized_message = try!(serde_json::to_string(&msg).map_err(|e| io::Error::new(io::ErrorKind::Other, e)));
