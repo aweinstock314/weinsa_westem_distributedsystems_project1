@@ -61,7 +61,7 @@ impl<I: Io> FramedIo for LengthPrefixedReader<I> {
             let size = try!(self.underlying.read_u64::<LittleEndian>()) as usize;
             if let SizeLimit::Bounded(maxsize) = self.sizebound {
                 if size >= maxsize as usize {
-                    println!("warning: in LengthPrefixedReader, received an input of size {} (bound is {:?})", size, self.sizebound);
+                    warn!("warning: in LengthPrefixedReader, received an input of size {} (bound is {:?})", size, self.sizebound);
                     return Err(io::Error::new(io::ErrorKind::Other, "LengthPrefixedReader: bound exceeded"));
                 }
             }

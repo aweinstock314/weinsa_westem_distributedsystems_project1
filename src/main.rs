@@ -12,8 +12,10 @@
 pub extern crate argparse;
 pub extern crate bincode;
 pub extern crate byteorder;
+pub extern crate env_logger;
 #[macro_use] pub extern crate futures;
 #[macro_use] pub extern crate lazy_static;
+#[macro_use] pub extern crate log;
 #[macro_use] pub extern crate nom;
 #[macro_use] pub extern crate serde_derive;
 pub extern crate serde_json;
@@ -93,7 +95,7 @@ impl ApplicationState {
         futures::lazy(|| Ok(()))
     }*/
     fn send_message_sync(&self, pid: Pid, msg: ApplicationMessage) -> Result<(), io::Error> {
-        println!("ApplicationState::send_message_sync: trying to send {:?} to {}", msg, pid);
+        trace!("ApplicationState::send_message_sync: trying to send {:?} to {}", msg, pid);
         let addr = self.nodes.get(&pid).expect(&format!("Tried to contact pid {}, but they don't have a nodes.txt entry (nodes: {:?})", pid, self.nodes));
         let mut sock = try!(net::TcpStream::connect(addr.0));
         let serialized_message = try!(serde_json::to_string(&msg).map_err(|e| io::Error::new(io::ErrorKind::Other, e)));
@@ -225,22 +227,22 @@ impl<W: FramedIo> Stream for StreamWriter<W> where W::In: fmt::Debug {
     type Item = ();
     type Error = io::Error;
     fn poll(&mut self) -> Poll<Option<()>, io::Error> {
-        println!("In StreamWriter::poll");
+        trace!("In StreamWriter::poll");
         while let Async::Ready(Some(msg)) = try!(self.receiver.poll()) {
-            println!("\tPushing {:?}", msg);
+            trace!("\tPushing {:?}", msg);
             self.queue.push_back(msg);
         }
         if !self.queue.is_empty() {
-            println!("\tAbout to poll_write");
+            trace!("\tAbout to poll_write");
             if let Async::NotReady = self.writer.poll_write() {
-                println!("\t\tpoll_write returned Async::NotReady");
+                trace!("\t\tpoll_write returned Async::NotReady");
             } else {
-                println!("\t\tpoll_write returned Async::Ready");
+                trace!("\t\tpoll_write returned Async::Ready");
                 for msg in self.queue.drain(..) {
-                    println!("About to write {:?}", msg);
+                    trace!("About to write {:?}", msg);
                     try_ready!(self.writer.write(msg));
                 }
-                println!("Returning from StreamWriter::poll");
+                trace!("Returning from StreamWriter::poll");
             }
         }
         Ok(Async::NotReady) // deliberate infinite loop/yield
@@ -268,6 +270,8 @@ fn split_sock(sock: TcpStream) -> impl Future<Item=(ApplicationMessageReader, Ap
 }
 
 fn main() {
+    env_logger::init().expect("Failed to initialize logging framework.");
+
     let mut pid: Pid = 0;
     let mut tree_fname: String = "tree.txt".into();
     let mut nodes_fname: String = "nodes.txt".into();
@@ -281,24 +285,24 @@ fn main() {
         ap.refer(&mut nodes_fname).add_option(&["-n", "--nodes-file"], Store, &nodes_descr);
         ap.parse_args_or_exit();
     }
-    println!("{}, {}, {}", pid, tree_fname, nodes_fname);
+    debug!("{}, {}, {}", pid, tree_fname, nodes_fname);
 
     // raw pairs of (pid,pid) edges
     let topology = run_parser_on_file(&tree_fname, parse_tree).expect(&format!("Couldn't parse {}", tree_fname));
-    println!("topology: {:?}", topology);
+    debug!("topology: {:?}", topology);
     // set of pids which are our neighbors
     let own_neighbors = get_neighbors(&topology, pid);
-    println!("{}'s neighbors: {:?}", pid, own_neighbors);
+    info!("{}'s neighbors: {:?}", pid, own_neighbors);
 
     // (pid -> ip) mapping
     let nodes = run_parser_on_file(&nodes_fname, parse_nodes).expect(&format!("Couldn't parse {}", nodes_fname));
-    println!("nodes: {:?}", nodes);
+    debug!("nodes: {:?}", nodes);
     // (ip -> pid) mapping
     let nodes_rev: HashMap<SocketAddr, Pid> = nodes.iter().map(|(&k,&v)| (v.0,k)).collect();
-    println!("nodes_rev: {:?}", nodes_rev);
+    debug!("nodes_rev: {:?}", nodes_rev);
 
     let own_addr = nodes.get(&pid).expect(&format!("Couldn't find an entry for pid {} in {} ({:?})", pid, nodes_fname, nodes));
-    println!("own_addr: {:?}", own_addr);
+    debug!("own_addr: {:?}", own_addr);
 
     let mut core = Core::new().expect("Failed to initialize event loop.");
 
@@ -315,20 +319,20 @@ fn main() {
     let server = {
         let handle = core.handle();
         listener.incoming().for_each(move |(sock, peer_addr)| {
-            println!("Incoming message from {:?}", peer_addr);
+            trace!("Incoming message from {:?}", peer_addr);
             let rw = split_sock(sock);
             let neighbors = own_neighbors.clone();
             let todo = rw.and_then(move |(r, w)| {
                 let (sender, writer) = make_stream_writer(w);
                 let writer = writer.for_each(|()| Ok(())).map_err(|e| {
-                    println!("An error occurred during the exection of writer: {:?}", e);
+                    warn!("An error occurred during the exection of writer: {:?}", e);
                     io::Error::new(io::ErrorKind::Other, "writer failed")
                 });
                 let reader = read_frame(r).and_then(move |(_, msg)| {
                     let peer_pid = msg.sender;
-                    println!("Received {:?} from {}", msg, peer_pid);
+                    trace!("Received {:?} from {}", msg, peer_pid);
                     let mut appstate = get_appstate();
-                    println!("application state before: {:#?}", *appstate);
+                    trace!("application state before: {:#?}", *appstate);
                     appstate.cache_peer(peer_pid, sender);
                     match msg.ty {
                         ApplicationMessageType::CreateFile => {
@@ -338,14 +342,14 @@ fn main() {
                                 st
                             };
                             if let Some(oldstate) = appstate.files.insert(msg.fname.clone(), newstate()) {
-                                println!("warning: created a file that already existed (new: {:?}, old {:?})", newstate(), oldstate);
+                                warn!("warning: created a file that already existed (new: {:?}, old {:?})", newstate(), oldstate);
                             } else {
                                 for neighbor in neighbors {
                                     if neighbor != peer_pid {
                                         let mut newmsg = msg.clone();
                                         newmsg.sender = pid;
                                         if let Err(e) = appstate.send_message_sync(neighbor, newmsg) {
-                                            println!("warning: error in CreateFile propagation: {:?}", e);
+                                            warn!("warning: error in CreateFile propagation: {:?}", e);
                                         }
                                     }
                                 }
@@ -356,10 +360,10 @@ fn main() {
                                 let pc = PeerContext { selfpid: pid, peerpid: peer_pid, neighbors: &neighbors };
                                 raystate.handle_message(&pc, raymsg)
                             } else {
-                                println!("warning: got a raymond message for a nonexistant file: {}", msg.fname);
+                                warn!("warning: got a raymond message for a nonexistant file: {}", msg.fname);
                                 vec![]
                             };
-                            println!("tosend: {:?}", tosend);
+                            trace!("tosend: {:?}", tosend);
                             for (neighbor, raymsg) in tosend.drain(..) {
                                 let appmsg = ApplicationMessage {
                                     fname: msg.fname.clone(),
@@ -367,33 +371,33 @@ fn main() {
                                     ty: ApplicationMessageType::Raymond(raymsg),
                                 };
                                 if let Err(e) = appstate.send_message_sync(neighbor, appmsg) {
-                                    println!("error in Raymond sending: {:?}", e);
+                                    warn!("error in Raymond sending: {:?}", e);
                                 }
                             }
                         },
                         ApplicationMessageType::DeleteFile => {
                             if let Some(x) = appstate.files.remove(&msg.fname) {
-                                println!("Deleted {:?}", x);
+                                trace!("Deleted {:?}", x);
                                 for neighbor in neighbors {
                                     if neighbor != peer_pid {
                                         let mut newmsg = msg.clone();
                                         newmsg.sender = pid;
                                         if let Err(e) = appstate.send_message_sync(neighbor, newmsg) {
-                                            println!("warning: error in DeleteFile propagation: {:?}", e);
+                                            warn!("warning: error in DeleteFile propagation: {:?}", e);
                                         }
                                     }
                                 }
                             } else {
-                                println!("warning: tried to delete a nonexistant file: {}", msg.fname);
+                                trace!("warning: tried to delete a nonexistant file: {}", msg.fname);
                             }
                         },
                     }
-                    println!("application state after: {:#?}", *appstate);
+                    trace!("application state after: {:#?}", *appstate);
                     Ok(())
                 });
                 reader.select(writer).map_err(|(e,_)| e)
             });
-            handle.spawn(todo.map(|_| ()).map_err(|e| { println!("An error occurred: {:?}", e); }));
+            handle.spawn(todo.map(|_| ()).map_err(|e| { warn!("An error occurred: {:?}", e); }));
             Ok(())
         })
     };

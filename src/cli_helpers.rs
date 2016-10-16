@@ -75,7 +75,7 @@ fn read(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
             appstate.send_message_sync(pid, appmsg).unwrap();
         }
         let resource = rchan.recv().unwrap();
-        println!("read: Got resource: {}", resource);
+        trace!("read: Got resource: {}", resource);
         let mut appstate = get_appstate();
         try!(cli_out.write_all(format!("Contents of resource {:?}: {}\n", res_name, resource).as_bytes()));
         let mut tosend = appstate.files.get_mut(res_name).unwrap().release();
@@ -88,7 +88,7 @@ fn read(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
             appstate.send_message_sync(pid, appmsg).unwrap();
         }
     }
-    println!("Done with read lock");
+    trace!("Done with read lock");
     Ok(())
 }
 
@@ -121,9 +121,9 @@ fn append(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
                 appstate.send_message_sync(pid, appmsg).unwrap();
             }
             let mut resource = rchan.recv().unwrap();
-            println!("append: Got resource: {}", resource);
+            trace!("append: Got resource: {}", resource);
             resource.extend(args[1].chars());
-            println!("append: Updated resource: {}", resource);
+            trace!("append: Updated resource: {}", resource);
             let mut appstate = get_appstate();
             let mut raystate = appstate.files.get_mut(res_name).unwrap();
             raystate.resource = Some(resource);
@@ -170,7 +170,7 @@ pub fn handle_clis_in_seperate_thread(ourpid: Pid, port: u16) {
         for sock in listener.incoming() {
             if let Ok(mut sock) = sock {
                 let addr = if let Ok(addr) = sock.peer_addr() { format!("{:?}", addr) } else { "{Error getting peer_addr}".into() };
-                println!("Got a CLI client: {}", addr);
+                debug!("Got a CLI client: {}", addr);
                 let options = concat!("Available commands:\n",
                     "\tcreate res_name\n",
                     "\tdelete res_name\n",
@@ -188,7 +188,7 @@ pub fn handle_clis_in_seperate_thread(ourpid: Pid, port: u16) {
                         try!(reader.get_mut().write_all(("--> ").as_bytes()));
                         let mut line = "".into();
                         try!(reader.read_line(&mut line));
-                        println!("Got line from {}: {}", peer_addr, line);
+                        trace!("Got line from {}: {}", peer_addr, line);
                         if let Err(_) = reader.get_mut().write_all(format!("echoing: {}\n", line).as_bytes()) {
                             break;
                         }
@@ -206,7 +206,7 @@ pub fn handle_clis_in_seperate_thread(ourpid: Pid, port: u16) {
                         });
                     } Ok(()) })() {
                         let e: io::Error = e;
-                        println!("An error ocurred while interacting with {:?}: {:?}", addr, e);
+                        warn!("An error ocurred while interacting with {:?}: {:?}", addr, e);
                     }
                 });
             }
