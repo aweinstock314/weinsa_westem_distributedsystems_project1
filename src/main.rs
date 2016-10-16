@@ -1,3 +1,6 @@
+#![feature(conservative_impl_trait)]
+#![feature(proc_macro)]
+
 /// The main program
 /// This is the file that runs everything
 /// Currently it does the following:
@@ -6,8 +9,6 @@
 ///     3. Boots up a tcp server to communicate between nodes
 
 //external imports
-#![feature(conservative_impl_trait)]
-#![feature(proc_macro)]
 pub extern crate argparse;
 pub extern crate bincode;
 pub extern crate byteorder;
