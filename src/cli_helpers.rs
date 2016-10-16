@@ -126,7 +126,7 @@ fn append(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
             trace!("append: Updated resource: {}", resource);
             let mut appstate = get_appstate();
             let mut raystate = appstate.files.get_mut(res_name).expect(&format!("appstate.files[{}] doesn't exist in the context of an append", res_name));
-            raystate.resource = Some(resource);
+            raystate.resource = resource;
             Some(raystate.release())
         } else {
             None

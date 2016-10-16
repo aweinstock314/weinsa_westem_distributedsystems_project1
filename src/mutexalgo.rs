@@ -63,7 +63,7 @@ pub trait MutexAlgorithm<Resource, Message> {
 //   This is effectively a list of callbacks called when a sent msg receives an async response
 //   When the async response happens, the item will have a valid Complete value
 pub struct RaymondState<Resource> {
-    pub resource: Option<Resource>,
+    pub resource: Resource,
     pub selfpid: Pid,
     pub using_resource: bool,
     pub holder: Pid,
@@ -73,9 +73,9 @@ pub struct RaymondState<Resource> {
 }
 // Constructor
 impl<Resource> RaymondState<Resource> {
-    pub fn new(holder: Pid, selfpid: Pid) -> RaymondState<Resource> {
+    pub fn new(holder: Pid, selfpid: Pid, resource: Resource) -> RaymondState<Resource> {
         RaymondState {
-            resource: None,
+            resource: resource,
             selfpid: selfpid,
             using_resource: false,
             holder: holder,
@@ -113,28 +113,32 @@ pub enum RaymondMessage<Resource> { GrantToken(Resource), Request }
 // These next 6 functions merely implement Raymond's algorithm as discussed in class
 // Note: They all return a vector of outgoing pid/msg pairs to send
 fn assign_token<Resource: Clone>(state: &mut RaymondState<Resource>) -> Vec<(Pid, RaymondMessage<Resource>)> {
+    trace!("In assign_token");
     if state.holder == state.selfpid
-        && !state.using_resource
-        && !state.requests.is_empty() {
-
-        state.holder = state.requests.pop_front().unwrap();
-        state.asked = false;
-        if state.holder == state.selfpid {
-            trace!("Assign Token: Using resource.");
-            state.using_resource = true;
-            // Using the resource
-            for resolver in state.resolvers.drain(..) {
-                resolver.send(state.resource.clone().unwrap()).unwrap();
+        && !state.using_resource {
+        if let Some(newholder) = state.requests.pop_front() {
+            state.holder = newholder;
+            state.asked = false;
+            if state.holder == state.selfpid {
+                trace!("Assign Token: Using resource.");
+                state.using_resource = true;
+                // Using the resource
+                for resolver in state.resolvers.drain(..) {
+                    if let Err(e) = resolver.send(state.resource.clone()) {
+                        warn!("Error sending resource to the resolver: {:?}", e);
+                    }
+                }
+            } else {
+                trace!("Assign Token: Sending off resource.");
+                return vec![(state.holder, RaymondMessage::GrantToken(state.resource.clone()))];
             }
-        } else {
-            trace!("Assign Token: Sending off resource.");
-            return vec![(state.holder, RaymondMessage::GrantToken(state.resource.clone().unwrap()))];
         }
     }
     Vec::new()
 }
 
 fn send_request<Resource: Clone>(state: &mut RaymondState<Resource>) -> Vec<(Pid, RaymondMessage<Resource>)> {
+    trace!("In send_request");
     if state.holder != state.selfpid
         && !state.requests.is_empty()
         && !state.asked {
@@ -147,7 +151,7 @@ fn send_request<Resource: Clone>(state: &mut RaymondState<Resource>) -> Vec<(Pid
 }
 
 fn request_token<Resource: Clone>(state: &mut RaymondState<Resource>) -> Vec<(Pid, RaymondMessage<Resource>)> {
-    trace!("Request Token");
+    trace!("In request_token");
     state.requests.push_back(state.selfpid);
     let mut tmp = assign_token(state);
     tmp.extend_from_slice(&send_request(state));
@@ -156,7 +160,7 @@ fn request_token<Resource: Clone>(state: &mut RaymondState<Resource>) -> Vec<(Pi
 }
 
 fn release_token<Resource: Clone>(state: &mut RaymondState<Resource>) -> Vec<(Pid, RaymondMessage<Resource>)> {
-    trace!("Release Token");
+    trace!("In release_token");
     state.using_resource = false;
     let mut tmp = assign_token(state);
     tmp.extend_from_slice(&send_request(state));
@@ -164,7 +168,7 @@ fn release_token<Resource: Clone>(state: &mut RaymondState<Resource>) -> Vec<(Pi
 }
 
 fn receive_request<Resource: Clone>(state: &mut RaymondState<Resource>, inc_pid: Pid) -> Vec<(Pid, RaymondMessage<Resource>)> {
-    trace!("Receive Request");
+    trace!("In receive_request {}", inc_pid);
     state.requests.push_back(inc_pid);
     let mut tmp = assign_token(state);
     tmp.extend_from_slice(&send_request(state));
@@ -172,9 +176,9 @@ fn receive_request<Resource: Clone>(state: &mut RaymondState<Resource>, inc_pid:
 }
 
 fn receive_token<Resource: Clone>(state: &mut RaymondState<Resource>, r: Resource) -> Vec<(Pid, RaymondMessage<Resource>)> {
-    trace!("Receive Token");
+    trace!("In receive_token");
     state.holder = state.selfpid;
-    state.resource = Some(r);
+    state.resource = r;
     let mut tmp = assign_token(state);
     tmp.extend_from_slice(&send_request(state));
     tmp
@@ -201,7 +205,7 @@ impl<Resource: Clone + Send + 'static> MutexAlgorithm<Resource, RaymondMessage<R
     fn handle_message(&mut self, pc: &PeerContext, msg: RaymondMessage<Resource>) -> Vec<(Pid, RaymondMessage<Resource>)> {
         trace!("MutexAlg: Handle Message");
         match msg {
-            RaymondMessage::GrantToken(r) => receive_token(self,r),
+            RaymondMessage::GrantToken(r) => receive_token(self, r),
             RaymondMessage::Request => receive_request(self, pc.peerpid),
         }
     }
