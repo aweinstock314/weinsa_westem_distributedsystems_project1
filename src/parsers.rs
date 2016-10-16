@@ -1,13 +1,23 @@
+/// This file handles all the parsing
+/// 1. Parsing the incoming tree file of the network graph
+/// 2. Parsing the incoming nodes file of the nodes and their respective ips/ports
+
 use super::*;
 
 named!(parse_usize<&[u8], usize>, map_res!(map_res!(nom::digit, str::from_utf8), str::FromStr::from_str));
 
+// Parses the trees.txt / adjacency list of the network graph
+// Returns a Topology, which is just the adjacency list vectorized
 pub fn parse_tree(input: &[u8]) -> IResult<&[u8], Topology> {
     named!(line<&[u8], (Pid, Pid)>, chain!(tag!("(") ~ src: parse_usize ~ tag!(",") ~ dst: parse_usize ~ tag!(")"), || (src, dst)));
     named!(tree<&[u8], Topology>, separated_list!(is_a!("\r\n"), line));
     tree(input)
 }
 
+// Parses the nodes.txt 
+// input in form of (pid, ip, port, cliport)
+// ex: (1,127.0.0.1,9001,10001)
+// returns a map of of nodes: pid -> (socketaddr, cliport)
 pub fn parse_nodes(input: &[u8]) -> IResult<&[u8], Nodes> {
     named!(quoted_string<&[u8], &[u8]>, chain!(tag!("\"") ~ s: is_not!("\"\r\n") ~ tag!("\""), || s));
     named!(quoted_ip<&[u8], IpAddr>, map_res!(map_res!(quoted_string, str::from_utf8), IpAddr::from_str));
@@ -34,6 +44,8 @@ pub fn parse_nodes(input: &[u8]) -> IResult<&[u8], Nodes> {
     }).boxed()
 }*/
 
+// simply runs a passed in parser on the passed in filename
+// returns a Result, which is either a generic (i.e. whatever you want) or an Error
 pub fn run_parser_on_file<A, F: Fn(&[u8]) -> IResult<&[u8], A>>(filename: &str, parser: F) -> Result<A, Box<Error>> {
     let mut file = BufReader::new(try!(File::open(filename)));
     let mut buf = vec![];
