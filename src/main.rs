@@ -268,7 +268,6 @@ fn main() {
     // set of pids which are our neighbors
     let mut own_neighbors = get_neighbors(&topology, pid);
     println!("{}'s neighbors: {:?}", pid, own_neighbors);
-    own_neighbors.insert(pid); // so that we can send to ourselves from the CLI
 
     // (pid -> ip) mapping
     let nodes = run_parser_on_file(&nodes_fname, parse_nodes).expect(&format!("Couldn't parse {}", nodes_fname));
@@ -318,7 +317,9 @@ fn main() {
                             } else {
                                 for neighbor in neighbors {
                                     if neighbor != peer_pid {
-                                        if let Err(e) = appstate.send_message_sync(neighbor, msg.clone()) {
+                                        let mut newmsg = msg.clone();
+                                        newmsg.sender = pid;
+                                        if let Err(e) = appstate.send_message_sync(neighbor, newmsg) {
                                             println!("warning: error in CreateFile propagation: {:?}", e);
                                         }
                                     }
@@ -350,7 +351,9 @@ fn main() {
                                 println!("Deleted {:?}", x);
                                 for neighbor in neighbors {
                                     if neighbor != peer_pid {
-                                        if let Err(e) = appstate.send_message_sync(neighbor, msg.clone()) {
+                                        let mut newmsg = msg.clone();
+                                        newmsg.sender = pid;
+                                        if let Err(e) = appstate.send_message_sync(neighbor, newmsg) {
                                             println!("warning: error in DeleteFile propagation: {:?}", e);
                                         }
                                     }
