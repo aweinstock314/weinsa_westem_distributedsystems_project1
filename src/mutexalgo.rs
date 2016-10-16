@@ -1,5 +1,26 @@
+//TODO Make sure the correct version of resource is being used/passed around everywhere
+//TODO Make sure using resource is correctly handled
+    // i.e. request, receive, use, release (idk how it goes from use to release)
+    // currently it looks like it is using resource in assign token, instead of outside in append)
+//TODO do resolvers ever need to be removed?
+
+/// Core file containing Raymond's Algorithm
+/// The implementation of Raymond's Algorithm
+///  simply expects a state/resource pair, then
+///  modifies the state appropriately.
+/// There is a public abstraction/interface called MutexAlgorithm
+///  that requires the functions request, release, & handle_message
+///  Our Raymond implements this, so it can be easily swapped out
+
+
 use super::*;
 
+// PeerContext
+// Represents what you currently know about your peers
+// selfpid: my own Pid
+// peerpid: the pid of the incoming/received message
+// neighbors: set of pids that are direct neighbors in the graph
+//  Neighbors is necessary to broadcast create/delete messages
 #[derive(Debug)]
 pub struct PeerContext<'a> {
     pub selfpid: Pid,
@@ -7,12 +28,40 @@ pub struct PeerContext<'a> {
     pub neighbors: &'a HashSet<Pid>,
 }
 
-pub trait MutexAlgorithm<Resource, Message, E> {
+// Note on (Complete, oneshot) and how it works
+// Step 1. Generate the pair
+// Step 2. Store the complete value
+// Step 3. Call the oneshot when you send the msg
+// Step 4. Call complete(value) when a response msg is received
+// Step 5. Access your complete value; it will be updated
+
+
+// MutexAlgorithm
+// Abstraction/interface for outside programs to use. Requires three functions:
+//   They all return a vector of pid/message pairs. This is a listing of all the
+//   outgoing messages the function creates to send on the socket
+//   (and corresponding pid). Should only be one, except for create/delete messages
+// request: call when you want to send a request for the resource
+//   Returns a tuple of ((Complete, oneshot), vector)
+//   oneshot is the msg to be sent
+//   complete is where the result will go once there is an async response
+// release: call when you want to release the resource
+//   Returns an outgoing msg vector 
+// handle_message: Handles incoming requests or token messages
+//   Takes in a PeerContext (to get the pid of the msg sender), as well as the msg
+//   Returns an outgoing msg vector
+pub trait MutexAlgorithm<Resource, Message> {
     fn request(&mut self) -> (Box<Future<Item=Resource, Error=futures::Canceled> + Send>, Vec<(Pid, Message)>);
     fn release(&mut self) -> Vec<(Pid, Message)>;
     fn handle_message(&mut self, &PeerContext, Message) -> Vec<(Pid, Message)>;
 }
 
+// RaymondState
+// Self explanatory. As discussed in class.
+// Includes the resource: TODO MAKE SURE THIS IS UPDATED appropriately
+// Also includes a list of resolvers
+//   This is effectively a list of callbacks called when a sent msg receives an async response
+//   When the async response happens, the item will have a valid Complete value
 pub struct RaymondState<Resource> {
     pub resource: Option<Resource>,
     pub selfpid: Pid,
@@ -22,7 +71,7 @@ pub struct RaymondState<Resource> {
     pub asked: bool,
     pub resolvers: Vec<futures::Complete<Resource>>
 }
-
+// Constructor
 impl<Resource> RaymondState<Resource> {
     pub fn new(holder: Pid, selfpid: Pid) -> RaymondState<Resource> {
         RaymondState {
@@ -38,6 +87,7 @@ impl<Resource> RaymondState<Resource> {
 }
 
 // https://github.com/rust-lang/rfcs/blob/master/text/0640-debug-improvements.md#helper-types
+// Debug printer
 impl<Resource: fmt::Debug> fmt::Debug for RaymondState<Resource> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         fmt.debug_struct("RaymondState")
@@ -51,10 +101,15 @@ impl<Resource: fmt::Debug> fmt::Debug for RaymondState<Resource> {
     }
 }
 
+// Messages sent over our algorithm are either:
+//   1. Granting a token (with the resource)
+//   2. A request for the token
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum RaymondMessage<Resource> { GrantToken(Resource), Request }
 
 
+// These next 6 functions memerly implement Raymond's algorithm as discussed in class
+// Note: They all return a vector of outgoing pid/msg pairs to send
 fn assign_token<Resource: Clone>(state: &mut RaymondState<Resource>) -> Vec<(Pid, RaymondMessage<Resource>)> {
     if state.holder == state.selfpid
         && !state.using_resource
@@ -117,18 +172,20 @@ fn receive_token<Resource: Clone>(state: &mut RaymondState<Resource>, r: Resourc
 }
 
 
-impl<Resource: Clone + Send + 'static> MutexAlgorithm<Resource, RaymondMessage<Resource>, ()> for RaymondState<Resource> {
+// Raymond's algorithm implementation of the MutexAlgorithm interface
+impl<Resource: Clone + Send + 'static> MutexAlgorithm<Resource, RaymondMessage<Resource>> for RaymondState<Resource> {
+    // request the token, stash the futures value in resolvers where the result will eventually go
+    // and return the msgs to be sent as well as the oneshot callback
     fn request(&mut self) -> (Box<Future<Item=Resource, Error=futures::Canceled> + Send>, Vec<(Pid, RaymondMessage<Resource>)>) {
         let tmp = request_token(self);
         let (complete, oneshot) = futures::oneshot::<Resource>(); 
         self.resolvers.push(complete);
         (Box::new(oneshot), tmp)
     }
-
     fn release(&mut self) -> Vec<(Pid, RaymondMessage<Resource>)> {
         release_token(self)
     }
-
+    // handles an incoming request or token msg
     fn handle_message(&mut self, pc: &PeerContext, msg: RaymondMessage<Resource>) -> Vec<(Pid, RaymondMessage<Resource>)> {
         match msg {
             RaymondMessage::GrantToken(r) => receive_token(self,r),
