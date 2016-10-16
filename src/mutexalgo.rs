@@ -108,6 +108,8 @@ impl<Resource: fmt::Debug> fmt::Debug for RaymondState<Resource> {
 pub enum RaymondMessage<Resource> { GrantToken(Resource), Request }
 
 
+// **********************************************************************************
+// Raymond's Algorithm
 // These next 6 functions merely implement Raymond's algorithm as discussed in class
 // Note: They all return a vector of outgoing pid/msg pairs to send
 fn assign_token<Resource: Clone>(state: &mut RaymondState<Resource>) -> Vec<(Pid, RaymondMessage<Resource>)> {
@@ -178,6 +180,7 @@ fn receive_token<Resource: Clone>(state: &mut RaymondState<Resource>, r: Resourc
     tmp
 }
 
+// **********************************************************************************
 
 // Raymond's algorithm implementation of the MutexAlgorithm interface
 impl<Resource: Clone + Send + 'static> MutexAlgorithm<Resource, RaymondMessage<Resource>> for RaymondState<Resource> {
