@@ -468,7 +468,7 @@ fn read(args: Vec<&str>, cli_out: &mut net::TcpStream) {
             appstate.send_message_sync(pid, appmsg).unwrap();
         }
         let resource = rchan.recv().unwrap();
-        println!("got resource: {}", resource);
+        println!("read: Got resource: {}", resource);
         let mut appstate = get_appstate();
         cli_out.write_all(format!("Contents of resource {:?}: {}\n", res_name, resource).as_bytes()).unwrap();
         let mut tosend = appstate.files.get_mut(res_name).unwrap().release();
@@ -487,28 +487,53 @@ fn read(args: Vec<&str>, cli_out: &mut net::TcpStream) {
 
 fn append(args: Vec<&str>, cli_out: &mut net::TcpStream) {
     cli_out.write_all(format!("Called append function.\n").as_bytes()).unwrap();
-    if args.len() != 1 {
+    if args.len() != 2 {
         cli_out.write_all(format!("Incorrect number of args: append res_name data\n").as_bytes()).unwrap();
         return;
     }
     let res_name: &str = args[0];
-    let mut appstate = get_appstate();
-    if let Some((rchan, mut tosend)) = if let Some(raystate) = appstate.files.get_mut(res_name) {
-        cli_out.write_all(format!("Can append!\n").as_bytes()).unwrap();
-        Some(raystate.request())
-    } else {
-        cli_out.write_all(format!("Cannot append resource {}; doesn't exist!\n", res_name).as_bytes()).unwrap();
-        None
+    let ourpid = get_appstate().ourpid;
+    if let Some(mut tosend) = {
+        if let Some((rchan, mut tosend)) = {
+            let mut appstate = get_appstate();
+            if let Some(raystate) = appstate.files.get_mut(res_name) {
+                cli_out.write_all(format!("Can append!\n").as_bytes()).unwrap();
+                Some(raystate.request())
+            } else {
+                cli_out.write_all(format!("Cannot append resource {}; doesn't exist!\n", res_name).as_bytes()).unwrap();
+                None
+            }
+        } {
+            for (pid, raymsg) in tosend.drain(..) {
+                let appmsg = ApplicationMessage {
+                    fname: res_name.into(),
+                    sender: ourpid,
+                    ty: ApplicationMessageType::Raymond(raymsg),
+                };
+                let appstate = get_appstate();
+                appstate.send_message_sync(pid, appmsg).unwrap();
+            }
+            let mut resource = rchan.recv().unwrap();
+            println!("append: Got resource: {}", resource);
+            resource.extend(args[1].chars());
+            println!("append: Updated resource: {}", resource);
+            let mut appstate = get_appstate();
+            let mut raystate = appstate.files.get_mut(res_name).unwrap();
+            raystate.resource = Some(resource);
+            Some(raystate.release())
+        } else {
+            None
+        }
     } {
+        let appstate = get_appstate();
         for (pid, raymsg) in tosend.drain(..) {
             let appmsg = ApplicationMessage {
                 fname: res_name.into(),
-                sender: pid,
+                sender: ourpid,
                 ty: ApplicationMessageType::Raymond(raymsg),
             };
             appstate.send_message_sync(pid, appmsg).unwrap();
         }
-        let resource = rchan.recv().unwrap();
     }
 }
 
