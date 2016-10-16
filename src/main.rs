@@ -306,12 +306,14 @@ fn main() {
                             appstate.cache_peer(peer_pid, sender);
                             match msg.ty {
                                 ApplicationMessageType::CreateFile => {
-                                    // TODO: check for existence, report warnings
-                                    appstate.files.insert(msg.fname.clone(), RaymondState::new(peer_pid, pid));
+                                    let newstate = move || { RaymondState::new(peer_pid, pid) };
+                                    if let Some(oldstate) = appstate.files.insert(msg.fname.clone(), newstate()) {
+                                        println!("warning: created a file that already existed (new: {:?}, old {:?})", newstate(), oldstate);
+                                    }
                                     for neighbor in neighbors {
                                         if neighbor != peer_pid {
                                             if let Err(e) = appstate.send_message_sync(neighbor, msg.clone()) {
-                                                println!("error in CreateFile propagation: {:?}", e);
+                                                println!("warning: error in CreateFile propagation: {:?}", e);
                                             }
                                         }
                                     }
@@ -336,8 +338,18 @@ fn main() {
                                     }
                                 },
                                 ApplicationMessageType::DeleteFile => {
-                                    //TODO: implement
-                                    ()
+                                    match appstate.files.remove(&msg.fname) {
+                                        Some(x) => println!("Deleted {:?}", x),
+                                        None => println!("warning: tried to delete a nonexistant file: {}", msg.fname),
+                                    }
+                                    // TODO: deduplicate w.r.t. CreateFile
+                                    for neighbor in neighbors {
+                                        if neighbor != peer_pid {
+                                            if let Err(e) = appstate.send_message_sync(neighbor, msg.clone()) {
+                                                println!("warning: error in DeleteFile propagation: {:?}", e);
+                                            }
+                                        }
+                                    }
                                 },
                             }
                             println!("application state after: {:#?}", *appstate);
