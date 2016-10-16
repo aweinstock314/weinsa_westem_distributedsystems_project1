@@ -11,14 +11,15 @@ pub fn parse_tree(input: &[u8]) -> IResult<&[u8], Topology> {
 pub fn parse_nodes(input: &[u8]) -> IResult<&[u8], Nodes> {
     named!(quoted_string<&[u8], &[u8]>, chain!(tag!("\"") ~ s: is_not!("\"\r\n") ~ tag!("\""), || s));
     named!(quoted_ip<&[u8], IpAddr>, map_res!(map_res!(quoted_string, str::from_utf8), IpAddr::from_str));
-    named!(node<&[u8], (Pid, SocketAddr)>, chain!(tag!("(") ~
+    named!(node<&[u8], (Pid, (SocketAddr, u16))>, chain!(tag!("(") ~
         pid: parse_usize ~ tag!(",") ~
         ip: quoted_ip ~ tag!(",") ~
-        port: parse_usize ~ tag!(")"),
-        || { (pid, SocketAddr::new(ip, port as u16)) }));
-    named!(nodes<&[u8], Vec<(Pid, SocketAddr)> >, separated_list!(is_a!("\r\n"), node));
+        port: parse_usize ~ tag!(",") ~
+        cliport: parse_usize ~ tag!(")"),
+        || { (pid, (SocketAddr::new(ip, port as u16), cliport as u16)) }));
+    named!(nodes<&[u8], Vec<(Pid, (SocketAddr, u16))> >, separated_list!(is_a!("\r\n"), node));
 
-    nodes(input).map(|nodes: Vec<(Pid, SocketAddr)>| { nodes.into_iter().collect::<Nodes>() })
+    nodes(input).map(|nodes: Vec<(Pid, (SocketAddr, u16))>| { nodes.into_iter().collect::<Nodes>() })
 }
 
 // Can't get the types to line up right, too general for now

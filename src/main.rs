@@ -31,7 +31,7 @@ pub use tokio_core::reactor::{Core, Handle};
 
 pub type Pid = usize;
 pub type Topology = Vec<(Pid, Pid)>;
-pub type Nodes = HashMap<Pid, SocketAddr>;
+pub type Nodes = HashMap<Pid, (SocketAddr, u16)>;
 pub type Peers = HashMap<Pid, TcpStream>;
 
 pub mod framing_helpers;
@@ -52,10 +52,11 @@ impl ApplicationState {
         self.cached_peers.entry(pid).or_insert(sender);
     }
     fn send_message(&mut self, pid: Pid, msg: ApplicationMessage, h: &Handle) -> impl Future<Item=(), Error=io::Error> {
+        println!("ApplicationState::send_message: trying to send {:?}", msg);
         if let None = self.cached_peers.get(&pid) {
             let addr = self.nodes.get(&pid).expect(&format!("Tried to contact pid {}, but they don't have a nodes.txt entry (nodes: {:?})", pid, self.nodes));
             println!("ApplicationState::send_message: trying to contact {:?}", addr);
-            let sock = TcpStream::connect(addr, h);
+            let sock = TcpStream::connect(&addr.0, h);
             let rw = sock.and_then(move |sock| { split_sock(sock) });
             let r_sender_writer = rw.and_then(|(r,w)| {
                 let (sender, writer) = make_stream_writer(w);
@@ -255,7 +256,7 @@ fn main() {
     let nodes = run_parser_on_file(&nodes_fname, parse_nodes).expect(&format!("Couldn't parse {}", nodes_fname));
     println!("nodes: {:?}", nodes);
     // (ip -> pid) mapping
-    let nodes_rev: HashMap<SocketAddr, Pid> = nodes.iter().map(|(&k,&v)| (v,k)).collect();
+    let nodes_rev: HashMap<SocketAddr, Pid> = nodes.iter().map(|(&k,&v)| (v.0,k)).collect();
     println!("nodes_rev: {:?}", nodes_rev);
 
     let own_addr = nodes.get(&pid).expect(&format!("Couldn't find an entry for pid {} in {} ({:?})", pid, nodes_fname, nodes));
@@ -268,7 +269,7 @@ fn main() {
         appstate.nodes = nodes.clone();
     }
 
-    let listener = TcpListener::bind(&own_addr, &core.handle()).expect("Failed to bind listener.");
+    let listener = TcpListener::bind(&own_addr.0, &core.handle()).expect("Failed to bind listener.");
     let server = {
         let handle = core.handle();
         listener.incoming().for_each(move |(sock, peer_addr)| {
@@ -279,6 +280,7 @@ fn main() {
                     println!("{} is our neighbor", peer_pid);
                     let rw = split_sock(sock);
                     let neighbors = own_neighbors.clone();
+                    let handle2 = handle.clone();
                     let todo = rw.and_then(move |(r, w)| {
                         let (sender, writer) = make_stream_writer(w);
                         let writer = writer.for_each(|()| Ok(())).map_err(|e| {
@@ -293,8 +295,12 @@ fn main() {
                             match msg.ty {
                                 ApplicationMessageType::CreateFile => {
                                     // TODO: check for existence, report warnings
-                                    appstate.files.insert(msg.fname, RaymondState::new(peer_pid, pid));
-                                    // TODO: propagate to non-sender neighbors
+                                    appstate.files.insert(msg.fname.clone(), RaymondState::new(peer_pid, pid));
+                                    for neighbor in neighbors {
+                                        if neighbor != peer_pid {
+                                            appstate.send_message(neighbor, msg.clone(), &handle2);
+                                        }
+                                    }
                                 },
                                 ApplicationMessageType::Raymond(raymsg) => {
                                     if let Some(mut raystate) = appstate.files.get_mut(&msg.fname) {
