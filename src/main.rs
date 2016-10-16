@@ -371,66 +371,75 @@ fn main() {
     core.run(server).expect("Failed to run event loop.");
 }
 
-fn create( appstate: &mut ApplicationState, args: Vec<&str>) {
-    println!("Called create function.");
+fn create(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
+    cli_out.write_all(format!("Called create function.").as_bytes());
     if args.len() != 1 {
-        println!("Incorrect number of args: create res_name");
+        cli_out.write_all(format!("Incorrect number of args: create res_name").as_bytes());
         return;
     }
     let res_name: &str = args[0];
     match appstate.files.get(res_name) {
-        Some(_) => println!("Cannot create resource {}; already exists!", res_name),
+        Some(_) => {
+            cli_out.write_all(format!("Cannot create resource {}; already exists!", res_name).as_bytes());
+        },
         None => {
-            println!("Can create!");
+            cli_out.write_all(format!("Can create!").as_bytes());
             //create code here
+
         },
     };
 }
 
-fn delete( appstate: &mut ApplicationState, args: Vec<&str>) {
-    println!("Called delete function.");
+fn delete(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
+    cli_out.write_all(format!("Called delete function.").as_bytes());
     if args.len() != 1 {
-        println!("Incorrect number of args: delete res_name");
+        cli_out.write_all(format!("Incorrect number of args: delete res_name").as_bytes());
         return;
     }
     let res_name: &str = args[0];
     match appstate.files.get(res_name) {
-        None => println!("Cannot delete resource {}; doesn't exist!", res_name),
+        None => {
+            cli_out.write_all(format!("Cannot delete resource {}; doesn't exist!", res_name).as_bytes());
+        },
         Some(_) => {
-            println!("Can delete!");
+            cli_out.write_all(format!("Can delete!").as_bytes());
             //delete code here
         },
     };
 }
 
-fn read( appstate: &mut ApplicationState, args: Vec<&str>) {
-    println!("Called read function.");
+fn read(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
+    cli_out.write_all(format!("Called read function.").as_bytes());
     if args.len() != 1 {
-        println!("Incorrect number of args: read res_name");
+        cli_out.write_all(format!("Incorrect number of args: read res_name").as_bytes());
         return;
     }
     let res_name: &str = args[0];
     match appstate.files.get(res_name) {
-        None => println!("Cannot read resource {}; doesn't exist!", res_name),
+        None => {
+            cli_out.write_all(format!("Cannot read resource {}; doesn't exist!", res_name).as_bytes());
+        },
         Some(_) => {
-            println!("Can read!");
+            cli_out.write_all(format!("Can read!").as_bytes());
             //read code here
         },
     };
 }
 
-fn append( appstate: &mut ApplicationState, args: Vec<&str>) {
-    println!("Called append function.");
-    if args.len() != 2 {
-        println!("Incorrect number of args: append res_name data");
+
+fn append(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
+    cli_out.write_all(format!("Called append function.").as_bytes());
+    if args.len() != 1 {
+        cli_out.write_all(format!("Incorrect number of args: append res_name data").as_bytes());
         return;
     }
     let res_name: &str = args[0];
-    let append_value: &str = args[1];
     match appstate.files.get(res_name) {
-        None => println!("Cannot append resource {}; doesn't exist!", res_name),
+        None => {
+            cli_out.write_all(format!("Cannot append resource {}; doesn't exist!", res_name).as_bytes());
+        },
         Some(_) => {
-            println!("Can append!");
+            cli_out.write_all(format!("Can append!").as_bytes());
             //append code here
         },
     };
@@ -454,9 +463,9 @@ fn handle_clis_in_seperate_thread(ourpid: Pid, port: u16) {
                     return;
                 }
                 thread::spawn(move || {
-                    print!("--> ");
-                    let mut reader = BufReader::new(&sock);
+                    let mut reader = BufReader::new(sock);
                     loop {
+                        reader.get_mut().write_all(("--> ").as_bytes());
                         let mut line = "".into();
                         if let Ok(_) = reader.read_line(&mut line) {
                             println!("Got line from {:?}: {}", addr, line);
@@ -466,10 +475,10 @@ fn handle_clis_in_seperate_thread(ourpid: Pid, port: u16) {
                             let mut iter = line.split_whitespace();
                             let mut appstate = get_appstate();
                             match iter.next() {
-                                Some("create") => create(&mut appstate, iter.collect()),
-                                Some("delete") => delete(&mut appstate, iter.collect()),
-                                Some("read") => read(&mut appstate, iter.collect()),
-                                Some("append") => append(&mut appstate, iter.collect()),
+                                Some("create") => create(&mut appstate, iter.collect(), reader.get_mut()),
+                                Some("delete") => delete(&mut appstate, iter.collect(), reader.get_mut()),
+                                Some("read") => read(&mut appstate, iter.collect(), reader.get_mut()),
+                                Some("append") => append(&mut appstate, iter.collect(), reader.get_mut()),
                                 Some(_) => println!("Invalid command {}", 5),
                                 None => continue,
                             };
