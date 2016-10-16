@@ -122,7 +122,7 @@ fn assign_token<Resource: Clone>(state: &mut RaymondState<Resource>) -> Vec<(Pid
             state.using_resource = true;
             // Using the resource
             for resolver in state.resolvers.drain(..) {
-                resolver.send(state.resource.clone().unwrap());
+                resolver.send(state.resource.clone().unwrap()).unwrap();
             }
         } else {
             println!("Assign Token: Sending off resource.");

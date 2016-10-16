@@ -282,7 +282,7 @@ fn main() {
     let topology = run_parser_on_file(&tree_fname, parse_tree).expect(&format!("Couldn't parse {}", tree_fname));
     println!("topology: {:?}", topology);
     // set of pids which are our neighbors
-    let mut own_neighbors = get_neighbors(&topology, pid);
+    let own_neighbors = get_neighbors(&topology, pid);
     println!("{}'s neighbors: {:?}", pid, own_neighbors);
 
     // (pid -> ip) mapping
@@ -392,61 +392,61 @@ fn main() {
 }
 
 fn create(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
-    cli_out.write_all(format!("Called create function.\n").as_bytes());
+    cli_out.write_all(format!("Called create function.\n").as_bytes()).unwrap();
     if args.len() != 1 {
-        cli_out.write_all(format!("Incorrect number of args: create res_name\n").as_bytes());
+        cli_out.write_all(format!("Incorrect number of args: create res_name\n").as_bytes()).unwrap();
         return;
     }
     let res_name: &str = args[0];
     let ourpid = appstate.ourpid;
     if let Some(_) = appstate.files.get(res_name) {
-        cli_out.write_all(format!("Cannot create resource {}; already exists!\n", res_name).as_bytes());
+        cli_out.write_all(format!("Cannot create resource {}; already exists!\n", res_name).as_bytes()).unwrap();
     } else {
-        cli_out.write_all(format!("Can create!\n").as_bytes());
+        cli_out.write_all(format!("Can create!\n").as_bytes()).unwrap();
         let appmsg = ApplicationMessage {
             fname: res_name.into(),
             sender: ourpid,
             ty: ApplicationMessageType::CreateFile,
         };
-        appstate.send_message_sync(ourpid, appmsg);
+        appstate.send_message_sync(ourpid, appmsg).unwrap();
     }
 }
 
 fn delete(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
-    cli_out.write_all(format!("Called delete function.\n").as_bytes());
+    cli_out.write_all(format!("Called delete function.\n").as_bytes()).unwrap();
     if args.len() != 1 {
-        cli_out.write_all(format!("Incorrect number of args: delete res_name\n").as_bytes());
+        cli_out.write_all(format!("Incorrect number of args: delete res_name\n").as_bytes()).unwrap();
         return;
     }
     let res_name: &str = args[0];
     let ourpid = appstate.ourpid;
     if let Some(_) = appstate.files.get(res_name) {
-        cli_out.write_all(format!("Can delete!\n").as_bytes());
+        cli_out.write_all(format!("Can delete!\n").as_bytes()).unwrap();
         // TODO: maybe acquire a lock first?
         let appmsg = ApplicationMessage {
             fname: res_name.into(),
             sender: ourpid,
             ty: ApplicationMessageType::DeleteFile,
         };
-        appstate.send_message_sync(ourpid, appmsg);
+        appstate.send_message_sync(ourpid, appmsg).unwrap();
     } else {
-        cli_out.write_all(format!("Cannot delete resource {}; doesn't exist!\n", res_name).as_bytes());
+        cli_out.write_all(format!("Cannot delete resource {}; doesn't exist!\n", res_name).as_bytes()).unwrap();
     }
 }
 
 fn read(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
-    cli_out.write_all(format!("Called read function.\n").as_bytes());
+    cli_out.write_all(format!("Called read function.\n").as_bytes()).unwrap();
     if args.len() != 1 {
-        cli_out.write_all(format!("Incorrect number of args: read res_name\n").as_bytes());
+        cli_out.write_all(format!("Incorrect number of args: read res_name\n").as_bytes()).unwrap();
         return;
     }
     let res_name: &str = args[0];
     let ourpid = appstate.ourpid;
     if let Some((rchan, mut tosend)) = if let Some(raystate) = appstate.files.get_mut(res_name) {
-        cli_out.write_all(format!("Attempting to read the resource:\n").as_bytes());
+        cli_out.write_all(format!("Attempting to read the resource:\n").as_bytes()).unwrap();
         Some(raystate.request())
     } else {
-        cli_out.write_all(format!("Cannot read resource {}; doesn't exist!\n", res_name).as_bytes());
+        cli_out.write_all(format!("Cannot read resource {}; doesn't exist!\n", res_name).as_bytes()).unwrap();
         None
     } {
         for (pid, raymsg) in tosend.drain(..) {
@@ -455,11 +455,11 @@ fn read(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::Tcp
                 sender: ourpid,
                 ty: ApplicationMessageType::Raymond(raymsg),
             };
-            appstate.send_message_sync(pid, appmsg);
+            appstate.send_message_sync(pid, appmsg).unwrap();
         }
         let resource = rchan.recv().unwrap();
         println!("got resource: {}", resource);
-        cli_out.write_all(format!("Contents of resource {:?}: {}\n", res_name, resource).as_bytes());
+        cli_out.write_all(format!("Contents of resource {:?}: {}\n", res_name, resource).as_bytes()).unwrap();
         let mut tosend = appstate.files.get_mut(res_name).unwrap().release();
         for (pid, raymsg) in tosend.drain(..) {
             let appmsg = ApplicationMessage {
@@ -467,24 +467,24 @@ fn read(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::Tcp
                 sender: ourpid,
                 ty: ApplicationMessageType::Raymond(raymsg),
             };
-            appstate.send_message_sync(pid, appmsg);
+            appstate.send_message_sync(pid, appmsg).unwrap();
         }
     }
 }
 
 
 fn append(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
-    cli_out.write_all(format!("Called append function.\n").as_bytes());
+    cli_out.write_all(format!("Called append function.\n").as_bytes()).unwrap();
     if args.len() != 1 {
-        cli_out.write_all(format!("Incorrect number of args: append res_name data\n").as_bytes());
+        cli_out.write_all(format!("Incorrect number of args: append res_name data\n").as_bytes()).unwrap();
         return;
     }
     let res_name: &str = args[0];
     if let Some((rchan, mut tosend)) = if let Some(raystate) = appstate.files.get_mut(res_name) {
-        cli_out.write_all(format!("Can append!\n").as_bytes());
+        cli_out.write_all(format!("Can append!\n").as_bytes()).unwrap();
         Some(raystate.request())
     } else {
-        cli_out.write_all(format!("Cannot append resource {}; doesn't exist!\n", res_name).as_bytes());
+        cli_out.write_all(format!("Cannot append resource {}; doesn't exist!\n", res_name).as_bytes()).unwrap();
         None
     } {
         for (pid, raymsg) in tosend.drain(..) {
@@ -493,7 +493,7 @@ fn append(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::T
                 sender: pid,
                 ty: ApplicationMessageType::Raymond(raymsg),
             };
-            appstate.send_message_sync(pid, appmsg);
+            appstate.send_message_sync(pid, appmsg).unwrap();
         }
         let resource = rchan.recv().unwrap();
     }
@@ -501,17 +501,17 @@ fn append(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::T
 
 fn ls(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
     if args.len() != 0 {
-        cli_out.write_all(format!("Incorrect number of args: ls\n").as_bytes());
+        cli_out.write_all(format!("Incorrect number of args: ls\n").as_bytes()).unwrap();
         return;
     }
     if appstate.files.len() == 0 {
-        cli_out.write_all(format!("No Active Resources Found.\n").as_bytes());
+        cli_out.write_all(format!("No Active Resources Found.\n").as_bytes()).unwrap();
         return;
     }
-    cli_out.write_all(format!("Listing of Active Resources:\n").as_bytes());
-    cli_out.write_all(format!("{:<8} {:<6}\n", "Name", "Holder\n").as_bytes());
+    cli_out.write_all(format!("Listing of Active Resources:\n").as_bytes()).unwrap();
+    cli_out.write_all(format!("{:<8} {:<6}\n", "Name", "Holder\n").as_bytes()).unwrap();
     for (name, filestate) in &appstate.files {
-        cli_out.write_all(format!("{:<8} {:<6}\n", name, filestate.holder).as_bytes());
+        cli_out.write_all(format!("{:<8} {:<6}\n", name, filestate.holder).as_bytes()).unwrap();
     }
 }
 
@@ -536,7 +536,7 @@ fn handle_clis_in_seperate_thread(ourpid: Pid, port: u16) {
                 thread::spawn(move || {
                     let mut reader = BufReader::new(sock);
                     loop {
-                        reader.get_mut().write_all(("--> ").as_bytes());
+                        reader.get_mut().write_all(("--> ").as_bytes()).unwrap();
                         let mut line = "".into();
                         if let Ok(_) = reader.read_line(&mut line) {
                             println!("Got line from {:?}: {}", addr, line);
@@ -552,7 +552,7 @@ fn handle_clis_in_seperate_thread(ourpid: Pid, port: u16) {
                                 Some("append") => append(&mut appstate, iter.collect(), reader.get_mut()),
                                 Some("ls") => ls(&mut appstate, iter.collect(), reader.get_mut()),
                                 Some(x) => {
-                                    reader.get_mut().write_all(format!("Invalid command {}\n", x).as_bytes());
+                                    reader.get_mut().write_all(format!("Invalid command {}\n", x).as_bytes()).unwrap();
                                 },
                                 None => continue,
                             };
