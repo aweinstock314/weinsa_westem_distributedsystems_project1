@@ -18,7 +18,7 @@ fn create(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
             sender: ourpid,
             ty: ApplicationMessageType::CreateFile,
         };
-        appstate.send_message_sync(ourpid, appmsg).unwrap();
+        try!(appstate.send_message_sync(ourpid, appmsg));
     }
     Ok(())
 }
@@ -40,7 +40,7 @@ fn delete(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
             sender: ourpid,
             ty: ApplicationMessageType::DeleteFile,
         };
-        appstate.send_message_sync(ourpid, appmsg).unwrap();
+        try!(appstate.send_message_sync(ourpid, appmsg));
     } else {
         try!(cli_out.write_all(format!("Cannot delete resource {}; doesn't exist!\n", res_name).as_bytes()));
     }
@@ -72,20 +72,20 @@ fn read(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
                 ty: ApplicationMessageType::Raymond(raymsg),
             };
             let appstate = get_appstate();
-            appstate.send_message_sync(pid, appmsg).unwrap();
+            try!(appstate.send_message_sync(pid, appmsg));
         }
-        let resource = rchan.recv().unwrap();
+        let resource = try!(rchan.recv().map_err(|_| io::Error::new(io::ErrorKind::Other, "mpsc recv failed")));
         trace!("read: Got resource: {}", resource);
         let mut appstate = get_appstate();
         try!(cli_out.write_all(format!("Contents of resource {:?}: {}\n", res_name, resource).as_bytes()));
-        let mut tosend = appstate.files.get_mut(res_name).unwrap().release();
+        let mut tosend = appstate.files.get_mut(res_name).expect(&format!("appstate.files[{}] doesn't exist in the context of a read", res_name)).release();
         for (pid, raymsg) in tosend.drain(..) {
             let appmsg = ApplicationMessage {
                 fname: res_name.into(),
                 sender: ourpid,
                 ty: ApplicationMessageType::Raymond(raymsg),
             };
-            appstate.send_message_sync(pid, appmsg).unwrap();
+            try!(appstate.send_message_sync(pid, appmsg));
         }
     }
     trace!("Done with read lock");
@@ -118,14 +118,14 @@ fn append(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
                     ty: ApplicationMessageType::Raymond(raymsg),
                 };
                 let appstate = get_appstate();
-                appstate.send_message_sync(pid, appmsg).unwrap();
+                try!(appstate.send_message_sync(pid, appmsg));
             }
-            let mut resource = rchan.recv().unwrap();
+            let mut resource = try!(rchan.recv().map_err(|_| io::Error::new(io::ErrorKind::Other, "mpsc recv failed")));
             trace!("append: Got resource: {}", resource);
             resource.extend(args[1].chars());
             trace!("append: Updated resource: {}", resource);
             let mut appstate = get_appstate();
-            let mut raystate = appstate.files.get_mut(res_name).unwrap();
+            let mut raystate = appstate.files.get_mut(res_name).expect(&format!("appstate.files[{}] doesn't exist in the context of an append", res_name));
             raystate.resource = Some(resource);
             Some(raystate.release())
         } else {
@@ -139,7 +139,7 @@ fn append(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
                 sender: ourpid,
                 ty: ApplicationMessageType::Raymond(raymsg),
             };
-            appstate.send_message_sync(pid, appmsg).unwrap();
+            try!(appstate.send_message_sync(pid, appmsg));
         }
     }
     Ok(())
