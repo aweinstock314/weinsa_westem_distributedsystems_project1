@@ -281,7 +281,7 @@ fn main() {
         appstate.nodes = nodes.clone();
     }
 
-    handle_clis_in_seperate_thread(own_addr.1);
+    handle_clis_in_seperate_thread(pid, own_addr.1);
 
     let listener = TcpListener::bind(&own_addr.0, &core.handle()).expect("Failed to bind listener.");
     let server = {
@@ -422,7 +422,7 @@ fn read( appstate: &mut ApplicationState, args: Vec<&str>) {
 fn append( appstate: &mut ApplicationState, args: Vec<&str>) {
     println!("Called append function.");
     if args.len() != 2 {
-        println!("Incorrect number of args: append res_name");
+        println!("Incorrect number of args: append res_name data");
         return;
     }
     let res_name: &str = args[0];
@@ -436,12 +436,23 @@ fn append( appstate: &mut ApplicationState, args: Vec<&str>) {
     };
 }
 
-fn handle_clis_in_seperate_thread(port: u16) {
+fn handle_clis_in_seperate_thread(ourpid: Pid, port: u16) {
     thread::spawn(move || {
-        for sock in net::TcpListener::bind(("0.0.0.0", port)).expect("Failed to bind CLI listener.").incoming() {
-            if let Ok(sock) = sock {
+        let listener = net::TcpListener::bind(("0.0.0.0", port)).expect("Failed to bind CLI listener.");
+        println!("Management CLI bound to port {}", port);
+        for sock in listener.incoming() {
+            if let Ok(mut sock) = sock {
                 let addr = sock.peer_addr();
                 println!("Got a CLI client: {:?}", addr);
+                let options = concat!("Available commands:\n",
+                    "\tcreate res_name\n",
+                    "\tdelete res_name\n",
+                    "\tread res_name\n",
+                    "\tappend res_name data\n",
+                );
+                if let Err(_) = sock.write_all(format!("Welcome to node {}'s management CLI\n{}", ourpid, options).as_bytes()) {
+                    return;
+                }
                 thread::spawn(move || {
                     print!("--> ");
                     let mut reader = BufReader::new(&sock);
@@ -449,7 +460,7 @@ fn handle_clis_in_seperate_thread(port: u16) {
                         let mut line = "".into();
                         if let Ok(_) = reader.read_line(&mut line) {
                             println!("Got line from {:?}: {}", addr, line);
-                            if let Err(_) = reader.get_mut().write_all(format!("echoing: {}", line).as_bytes()) {
+                            if let Err(_) = reader.get_mut().write_all(format!("echoing: {}\n", line).as_bytes()) {
                                 break;
                             }
                             let mut iter = line.split_whitespace();
