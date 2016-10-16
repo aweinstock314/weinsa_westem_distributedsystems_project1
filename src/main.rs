@@ -99,6 +99,7 @@ impl fmt::Debug for ApplicationState {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct ApplicationMessage {
     fname: String,
+    sender: Pid,
     ty: ApplicationMessageType,
 }
 
@@ -265,8 +266,9 @@ fn main() {
     let topology = run_parser_on_file(&tree_fname, parse_tree).expect(&format!("Couldn't parse {}", tree_fname));
     println!("topology: {:?}", topology);
     // set of pids which are our neighbors
-    let own_neighbors = get_neighbors(&topology, pid);
+    let mut own_neighbors = get_neighbors(&topology, pid);
     println!("{}'s neighbors: {:?}", pid, own_neighbors);
+    own_neighbors.insert(pid); // so that we can send to ourselves from the CLI
 
     // (pid -> ip) mapping
     let nodes = run_parser_on_file(&nodes_fname, parse_nodes).expect(&format!("Couldn't parse {}", nodes_fname));
@@ -294,83 +296,76 @@ fn main() {
         let handle = core.handle();
         listener.incoming().for_each(move |(sock, peer_addr)| {
             println!("Incoming message from {:?}", peer_addr);
-            if let Some(&peer_pid) = nodes_rev.get(&peer_addr) {
-                println!("peer_pid: {}", peer_pid);
-                if own_neighbors.contains(&peer_pid) {
-                    println!("{} is our neighbor", peer_pid);
-                    let rw = split_sock(sock);
-                    let neighbors = own_neighbors.clone();
-                    let todo = rw.and_then(move |(r, w)| {
-                        let (sender, writer) = make_stream_writer(w);
-                        let writer = writer.for_each(|()| Ok(())).map_err(|e| {
-                            println!("An error occurred during the exection of writer: {:?}", e);
-                            io::Error::new(io::ErrorKind::Other, "writer failed")
-                        });
-                        let reader = read_frame(r).and_then(move |(_, msg)| {
-                            println!("Received {:?} from {}", msg, peer_pid);
-                            let mut appstate = get_appstate();
-                            println!("application state before: {:#?}", *appstate);
-                            appstate.cache_peer(peer_pid, sender);
-                            match msg.ty {
-                                ApplicationMessageType::CreateFile => {
-                                    let newstate = move || { RaymondState::new(peer_pid, pid) };
-                                    if let Some(oldstate) = appstate.files.insert(msg.fname.clone(), newstate()) {
-                                        println!("warning: created a file that already existed (new: {:?}, old {:?})", newstate(), oldstate);
-                                    }
-                                    for neighbor in neighbors {
-                                        if neighbor != peer_pid {
-                                            if let Err(e) = appstate.send_message_sync(neighbor, msg.clone()) {
-                                                println!("warning: error in CreateFile propagation: {:?}", e);
-                                            }
+            let rw = split_sock(sock);
+            let neighbors = own_neighbors.clone();
+            let todo = rw.and_then(move |(r, w)| {
+                let (sender, writer) = make_stream_writer(w);
+                let writer = writer.for_each(|()| Ok(())).map_err(|e| {
+                    println!("An error occurred during the exection of writer: {:?}", e);
+                    io::Error::new(io::ErrorKind::Other, "writer failed")
+                });
+                let reader = read_frame(r).and_then(move |(_, msg)| {
+                    let peer_pid = msg.sender;
+                    println!("Received {:?} from {}", msg, peer_pid);
+                    let mut appstate = get_appstate();
+                    println!("application state before: {:#?}", *appstate);
+                    appstate.cache_peer(peer_pid, sender);
+                    match msg.ty {
+                        ApplicationMessageType::CreateFile => {
+                            let newstate = move || { RaymondState::new(peer_pid, pid) };
+                            if let Some(oldstate) = appstate.files.insert(msg.fname.clone(), newstate()) {
+                                println!("warning: created a file that already existed (new: {:?}, old {:?})", newstate(), oldstate);
+                            } else {
+                                for neighbor in neighbors {
+                                    if neighbor != peer_pid {
+                                        if let Err(e) = appstate.send_message_sync(neighbor, msg.clone()) {
+                                            println!("warning: error in CreateFile propagation: {:?}", e);
                                         }
                                     }
-                                },
-                                ApplicationMessageType::Raymond(raymsg) => {
-                                    let mut tosend = if let Some(mut raystate) = appstate.files.get_mut(&msg.fname) {
-                                        let pc = PeerContext { selfpid: pid, peerpid: peer_pid, neighbors: &neighbors };
-                                        raystate.handle_message(&pc, raymsg)
-                                    } else {
-                                        println!("warning: got a raymond message for a nonexistant file: {}", msg.fname);
-                                        vec![]
-                                    };
-                                    println!("tosend: {:?}", tosend);
-                                    for (neighbor, raymsg) in tosend.drain(..) {
-                                        let appmsg = ApplicationMessage {
-                                            fname: msg.fname.clone(),
-                                            ty: ApplicationMessageType::Raymond(raymsg),
-                                        };
-                                        if let Err(e) = appstate.send_message_sync(neighbor, appmsg) {
-                                            println!("error in Raymond sending: {:?}", e);
-                                        }
-                                    }
-                                },
-                                ApplicationMessageType::DeleteFile => {
-                                    match appstate.files.remove(&msg.fname) {
-                                        Some(x) => println!("Deleted {:?}", x),
-                                        None => println!("warning: tried to delete a nonexistant file: {}", msg.fname),
-                                    }
-                                    // TODO: deduplicate w.r.t. CreateFile
-                                    for neighbor in neighbors {
-                                        if neighbor != peer_pid {
-                                            if let Err(e) = appstate.send_message_sync(neighbor, msg.clone()) {
-                                                println!("warning: error in DeleteFile propagation: {:?}", e);
-                                            }
-                                        }
-                                    }
-                                },
+                                }
                             }
-                            println!("application state after: {:#?}", *appstate);
-                            Ok(())
-                        });
-                        reader.select(writer).map_err(|(e,_)| e)
-                    });
-                    handle.spawn(todo.map(|_| ()).map_err(|e| { println!("An error occurred: {:?}", e); }));
-                } else {
-                    println!("warning: contacted by a non-neighbor: {}", peer_pid);
-                }
-            } else {
-                println!("warning: contacted by a node outside the network: {:?}", peer_addr);
-            }
+                        },
+                        ApplicationMessageType::Raymond(raymsg) => {
+                            let mut tosend = if let Some(mut raystate) = appstate.files.get_mut(&msg.fname) {
+                                let pc = PeerContext { selfpid: pid, peerpid: peer_pid, neighbors: &neighbors };
+                                raystate.handle_message(&pc, raymsg)
+                            } else {
+                                println!("warning: got a raymond message for a nonexistant file: {}", msg.fname);
+                                vec![]
+                            };
+                            println!("tosend: {:?}", tosend);
+                            for (neighbor, raymsg) in tosend.drain(..) {
+                                let appmsg = ApplicationMessage {
+                                    fname: msg.fname.clone(),
+                                    sender: pid,
+                                    ty: ApplicationMessageType::Raymond(raymsg),
+                                };
+                                if let Err(e) = appstate.send_message_sync(neighbor, appmsg) {
+                                    println!("error in Raymond sending: {:?}", e);
+                                }
+                            }
+                        },
+                        ApplicationMessageType::DeleteFile => {
+                            if let Some(x) = appstate.files.remove(&msg.fname) {
+                                println!("Deleted {:?}", x);
+                                for neighbor in neighbors {
+                                    if neighbor != peer_pid {
+                                        if let Err(e) = appstate.send_message_sync(neighbor, msg.clone()) {
+                                            println!("warning: error in DeleteFile propagation: {:?}", e);
+                                        }
+                                    }
+                                }
+                            } else {
+                                println!("warning: tried to delete a nonexistant file: {}", msg.fname);
+                            }
+                        },
+                    }
+                    println!("application state after: {:#?}", *appstate);
+                    Ok(())
+                });
+                reader.select(writer).map_err(|(e,_)| e)
+            });
+            handle.spawn(todo.map(|_| ()).map_err(|e| { println!("An error occurred: {:?}", e); }));
             Ok(())
         })
     };
@@ -391,6 +386,7 @@ fn create(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::T
         cli_out.write_all(format!("Can create!\n").as_bytes());
         let appmsg = ApplicationMessage {
             fname: res_name.into(),
+            sender: ourpid,
             ty: ApplicationMessageType::CreateFile,
         };
         appstate.send_message_sync(ourpid, appmsg);
@@ -410,6 +406,7 @@ fn delete(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::T
         // TODO: maybe acquire a lock first?
         let appmsg = ApplicationMessage {
             fname: res_name.into(),
+            sender: ourpid,
             ty: ApplicationMessageType::DeleteFile,
         };
         appstate.send_message_sync(ourpid, appmsg);
@@ -440,6 +437,7 @@ fn read(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::Tcp
     for (pid, raymsg) in tosend.drain(..) {
         let appmsg = ApplicationMessage {
             fname: res_name.into(),
+            sender: pid,
             ty: ApplicationMessageType::Raymond(raymsg),
         };
         appstate.send_message_sync(pid, appmsg);
@@ -468,6 +466,7 @@ fn append(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::T
     for (pid, raymsg) in tosend.drain(..) {
         let appmsg = ApplicationMessage {
             fname: res_name.into(),
+            sender: pid,
             ty: ApplicationMessageType::Raymond(raymsg),
         };
         appstate.send_message_sync(pid, appmsg);
