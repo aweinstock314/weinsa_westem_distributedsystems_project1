@@ -479,8 +479,9 @@ fn handle_clis_in_seperate_thread(ourpid: Pid, port: u16) {
                                 Some("delete") => delete(&mut appstate, iter.collect(), reader.get_mut()),
                                 Some("read") => read(&mut appstate, iter.collect(), reader.get_mut()),
                                 Some("append") => append(&mut appstate, iter.collect(), reader.get_mut()),
-                                Some(x) => reader.get_mut().write_all(format!("Invalid command {}\n", x).as_bytes()),
-                                
+                                Some(x) => {
+                                    reader.get_mut().write_all(format!("Invalid command {}\n", x).as_bytes());
+                                },
                                 None => continue,
                             };
                         } else {
