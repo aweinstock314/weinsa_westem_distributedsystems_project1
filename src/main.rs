@@ -372,18 +372,18 @@ fn main() {
 }
 
 fn create(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
-    cli_out.write_all(format!("Called create function.").as_bytes());
+    cli_out.write_all(format!("Called create function.\n").as_bytes());
     if args.len() != 1 {
-        cli_out.write_all(format!("Incorrect number of args: create res_name").as_bytes());
+        cli_out.write_all(format!("Incorrect number of args: create res_name.\n").as_bytes());
         return;
     }
     let res_name: &str = args[0];
     match appstate.files.get(res_name) {
         Some(_) => {
-            cli_out.write_all(format!("Cannot create resource {}; already exists!", res_name).as_bytes());
+            cli_out.write_all(format!("Cannot create resource {}; already exists!\n", res_name).as_bytes());
         },
         None => {
-            cli_out.write_all(format!("Can create!").as_bytes());
+            cli_out.write_all(format!("Can create!\n").as_bytes());
             //create code here
 
         },
@@ -391,36 +391,36 @@ fn create(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::T
 }
 
 fn delete(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
-    cli_out.write_all(format!("Called delete function.").as_bytes());
+    cli_out.write_all(format!("Called delete function.\n").as_bytes());
     if args.len() != 1 {
-        cli_out.write_all(format!("Incorrect number of args: delete res_name").as_bytes());
+        cli_out.write_all(format!("Incorrect number of args: delete res_name.\n").as_bytes());
         return;
     }
     let res_name: &str = args[0];
     match appstate.files.get(res_name) {
         None => {
-            cli_out.write_all(format!("Cannot delete resource {}; doesn't exist!", res_name).as_bytes());
+            cli_out.write_all(format!("Cannot delete resource {}; doesn't exist!\n", res_name).as_bytes());
         },
         Some(_) => {
-            cli_out.write_all(format!("Can delete!").as_bytes());
+            cli_out.write_all(format!("Can delete!\n").as_bytes());
             //delete code here
         },
     };
 }
 
 fn read(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
-    cli_out.write_all(format!("Called read function.").as_bytes());
+    cli_out.write_all(format!("Called read function.\n").as_bytes());
     if args.len() != 1 {
-        cli_out.write_all(format!("Incorrect number of args: read res_name").as_bytes());
+        cli_out.write_all(format!("Incorrect number of args: read res_name\n").as_bytes());
         return;
     }
     let res_name: &str = args[0];
     match appstate.files.get(res_name) {
         None => {
-            cli_out.write_all(format!("Cannot read resource {}; doesn't exist!", res_name).as_bytes());
+            cli_out.write_all(format!("Cannot read resource {}; doesn't exist!\n", res_name).as_bytes());
         },
         Some(_) => {
-            cli_out.write_all(format!("Can read!").as_bytes());
+            cli_out.write_all(format!("Can read!\n").as_bytes());
             //read code here
         },
     };
@@ -428,18 +428,18 @@ fn read(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::Tcp
 
 
 fn append(appstate: &mut ApplicationState, args: Vec<&str>, cli_out: &mut net::TcpStream) {
-    cli_out.write_all(format!("Called append function.").as_bytes());
+    cli_out.write_all(format!("Called append function.\n").as_bytes());
     if args.len() != 1 {
-        cli_out.write_all(format!("Incorrect number of args: append res_name data").as_bytes());
+        cli_out.write_all(format!("Incorrect number of args: append res_name data\n").as_bytes());
         return;
     }
     let res_name: &str = args[0];
     match appstate.files.get(res_name) {
         None => {
-            cli_out.write_all(format!("Cannot append resource {}; doesn't exist!", res_name).as_bytes());
+            cli_out.write_all(format!("Cannot append resource {}; doesn't exist!\n", res_name).as_bytes());
         },
         Some(_) => {
-            cli_out.write_all(format!("Can append!").as_bytes());
+            cli_out.write_all(format!("Can append!\n").as_bytes());
             //append code here
         },
     };
@@ -479,7 +479,8 @@ fn handle_clis_in_seperate_thread(ourpid: Pid, port: u16) {
                                 Some("delete") => delete(&mut appstate, iter.collect(), reader.get_mut()),
                                 Some("read") => read(&mut appstate, iter.collect(), reader.get_mut()),
                                 Some("append") => append(&mut appstate, iter.collect(), reader.get_mut()),
-                                Some(_) => println!("Invalid command {}", 5),
+                                Some(x) => reader.get_mut().write_all(format!("Invalid command {}\n", x).as_bytes()),
+                                
                                 None => continue,
                             };
                         } else {
