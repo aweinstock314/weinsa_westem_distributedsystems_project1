@@ -327,7 +327,11 @@ fn main() {
                     appstate.cache_peer(peer_pid, sender);
                     match msg.ty {
                         ApplicationMessageType::CreateFile => {
-                            let newstate = move || { RaymondState::new(peer_pid, pid) };
+                            let newstate = move || {
+                                let mut st = RaymondState::new(peer_pid, pid);
+                                st.resource = Some("".into());
+                                st
+                            };
                             if let Some(oldstate) = appstate.files.insert(msg.fname.clone(), newstate()) {
                                 println!("warning: created a file that already existed (new: {:?}, old {:?})", newstate(), oldstate);
                             } else {
