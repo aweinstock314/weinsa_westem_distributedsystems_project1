@@ -24,7 +24,7 @@ pub use std::io::prelude::*;
 pub use std::net::{IpAddr, SocketAddr};
 pub use std::str::FromStr;
 pub use std::sync::{Mutex, MutexGuard};
-pub use std::{fmt, io, mem, str};
+pub use std::{fmt, io, mem, net, str, thread};
 pub use tokio_core::io::{FramedIo, Io, ReadHalf, WriteHalf};
 pub use tokio_core::net::{TcpListener, TcpStream};
 pub use tokio_core::reactor::{Core, Handle};
@@ -269,6 +269,8 @@ fn main() {
         appstate.nodes = nodes.clone();
     }
 
+    handle_clis_in_seperate_thread(own_addr.1);
+
     let listener = TcpListener::bind(&own_addr.0, &core.handle()).expect("Failed to bind listener.");
     let server = {
         let handle = core.handle();
@@ -334,4 +336,29 @@ fn main() {
         })
     };
     core.run(server).expect("Failed to run event loop.");
+}
+
+fn handle_clis_in_seperate_thread(port: u16) {
+    thread::spawn(move || {
+        for sock in net::TcpListener::bind(("0.0.0.0", port)).expect("Failed to bind CLI listener.").incoming() {
+            if let Ok(sock) = sock {
+                let addr = sock.peer_addr();
+                println!("Got a CLI client: {:?}", addr);
+                thread::spawn(move || {
+                    let mut reader = BufReader::new(&sock);
+                    loop {
+                        let mut line = "".into();
+                        if let Ok(_) = reader.read_line(&mut line) {
+                            println!("Got line from {:?}: {}", addr, line);
+                            if let Err(_) = reader.get_mut().write_all(format!("echoing: {}", line).as_bytes()) {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                });
+            }
+        }
+    });
 }
