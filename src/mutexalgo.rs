@@ -1,9 +1,3 @@
-//TODO Make sure the correct version of resource is being used/passed around everywhere
-//TODO Make sure using resource is correctly handled
-    // i.e. request, receive, use, release (idk how it goes from use to release)
-    // currently it looks like it is using resource in assign token, instead of outside in append)
-//TODO do resolvers ever need to be removed?
-
 /// Core file containing Raymond's Algorithm
 /// The implementation of Raymond's Algorithm
 ///  simply expects a state/resource pair, then
@@ -11,7 +5,6 @@
 /// There is a public abstraction/interface called MutexAlgorithm
 ///  that requires the functions request, release, & handle_message
 ///  Our Raymond implements this, so it can be easily swapped out
-
 
 use super::*;
 
@@ -58,7 +51,7 @@ pub trait MutexAlgorithm<Resource, Message> {
 
 // RaymondState
 // Self explanatory. As discussed in class.
-// Includes the resource: TODO MAKE SURE THIS IS UPDATED appropriately
+// Includes a cached copy of the resource
 // Also includes a list of resolvers
 //   This is effectively a list of callbacks called when a sent msg receives an async response
 //   When the async response happens, the item will have a valid Complete value

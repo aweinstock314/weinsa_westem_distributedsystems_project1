@@ -1,6 +1,6 @@
 use super::*;
 
-// TODO: COBS framer: https://en.wikipedia.org/wiki/Consistent_Overhead_Byte_Stuffing
+// Potential Future Work: COBS framer: https://en.wikipedia.org/wiki/Consistent_Overhead_Byte_Stuffing
 pub struct LengthPrefixedFramerState {
     sofar: usize,
     buf: Vec<u8>,

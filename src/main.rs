@@ -74,26 +74,6 @@ impl ApplicationState {
     fn cache_peer(&mut self, pid: Pid, sender: futures::stream::Sender<ApplicationMessage, io::Error>) {
         self.cached_peers.entry(pid).or_insert(sender);
     }
-    /*fn send_message(&mut self, pid: Pid, msg: ApplicationMessage, h: &Handle) -> impl Future<Item=(), Error=io::Error> {
-        println!("ApplicationState::send_message: trying to send {:?}", msg);
-        if let None = self.cached_peers.get(&pid) {
-            let addr = self.nodes.get(&pid).expect(&format!("Tried to contact pid {}, but they don't have a nodes.txt entry (nodes: {:?})", pid, self.nodes));
-            println!("ApplicationState::send_message: trying to contact {:?}", addr);
-            let sock = TcpStream::connect(&addr.0, h);
-            let rw = sock.and_then(move |sock| { split_sock(sock) });
-            let r_sender_writer = rw.and_then(|(r, w)| {
-                let (sender, writer) = make_stream_writer(w);
-                Ok((r, sender, writer))
-            }).wait();
-            if let Ok((r, sender, writer)) = r_sender_writer {
-                println!("tcp connection happened");
-            } else {
-                println!("tcp connection didn't happen");
-            }
-        }
-        // TODO: 1) address the case where we have a connection cached 2) maybe cache the reader? start a readloop? 3) actually send the message
-        futures::lazy(|| Ok(()))
-    }*/
     fn send_message_sync(&self, pid: Pid, msg: ApplicationMessage) -> Result<(), io::Error> {
         trace!("In ApplicationState::send_message_sync");
         info!("About to send {:?} to {}", msg, pid);
@@ -134,7 +114,7 @@ pub enum ApplicationMessageType {
     DeleteFile, // should only be issued after a lock is held
 }
 
-// TODO: generalize to arbitrary serde types and move to framing_helpers
+// Potential Future Work: generalize to arbitrary serde types and move to framing_helpers
 struct ApplicationMessageReader(LengthPrefixedReader<TcpStream>);
 struct ApplicationMessageWriter(LengthPrefixedWriter<TcpStream>);
 
@@ -218,7 +198,7 @@ pub fn get_appstate<'a>() -> MutexGuard<'a, ApplicationState> {
     APPSTATE.lock().expect("Failed to acquire APPSTATE lock.")
 }
 
-// TODO: dream up better stream combinators?
+// Potential Future Work: dream up better stream combinators? (asynch loops are currently kind of painful, maybe make recursion scheme combinators)
 struct StreamWriter<W: FramedIo> {
     writer: W,
     receiver: futures::stream::Receiver<W::In, io::Error>,

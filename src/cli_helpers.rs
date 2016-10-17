@@ -1,7 +1,7 @@
 use super::*;
 
 fn create(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
-    try!(cli_out.write_all(format!("Called create function.\n").as_bytes()));
+    trace!("Called create function.\n");
     if args.len() != 1 {
         try!(cli_out.write_all(format!("Incorrect number of args: create res_name\n").as_bytes()));
         return Ok(());
@@ -12,7 +12,7 @@ fn create(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
     if let Some(_) = appstate.files.get(res_name) {
         try!(cli_out.write_all(format!("Cannot create resource {}; already exists!\n", res_name).as_bytes()));
     } else {
-        try!(cli_out.write_all(format!("Can create!\n").as_bytes()));
+        try!(cli_out.write_all(format!("Creating the resource {}.\n", res_name).as_bytes()));
         let appmsg = ApplicationMessage {
             fname: res_name.into(),
             sender: ourpid,
@@ -24,31 +24,48 @@ fn create(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
 }
 
 fn delete(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
-    try!(cli_out.write_all(format!("Called delete function.\n").as_bytes()));
+    trace!("Called delete function.");
     if args.len() != 1 {
         try!(cli_out.write_all(format!("Incorrect number of args: delete res_name\n").as_bytes()));
         return Ok(());
     }
     let res_name: &str = args[0];
-    let appstate = get_appstate();
-    let ourpid = appstate.ourpid;
-    if let Some(_) = appstate.files.get(res_name) {
-        try!(cli_out.write_all(format!("Can delete!\n").as_bytes()));
-        // TODO: maybe acquire a lock first?
+    let ourpid = get_appstate().ourpid;
+    if let Some((rchan, mut tosend)) = {
+        let mut appstate = get_appstate();
+        if let Some(raystate) = appstate.files.get_mut(res_name) {
+            try!(cli_out.write_all(format!("Attempting to delete the resource {}.\n", res_name).as_bytes()));
+            Some(raystate.request())
+        } else {
+            try!(cli_out.write_all(format!("Cannot delete resource {}; doesn't exist!\n", res_name).as_bytes()));
+            None
+        }
+    } {
+        for (pid, raymsg) in tosend.drain(..) {
+            let appmsg = ApplicationMessage {
+                fname: res_name.into(),
+                sender: ourpid,
+                ty: ApplicationMessageType::Raymond(raymsg),
+            };
+            let appstate = get_appstate();
+            try!(appstate.send_message_sync(pid, appmsg));
+        }
+        let resource = try!(rchan.recv().map_err(|_| io::Error::new(io::ErrorKind::Other, "mpsc recv failed")));
+        debug!("resource to be deleted's value was {:?}", resource);
+        try!(cli_out.write_all(format!("Sucessfully aquired a lock to delete resource {}\n", res_name).as_bytes()));
         let appmsg = ApplicationMessage {
             fname: res_name.into(),
             sender: ourpid,
             ty: ApplicationMessageType::DeleteFile,
         };
+        let appstate = get_appstate();
         try!(appstate.send_message_sync(ourpid, appmsg));
-    } else {
-        try!(cli_out.write_all(format!("Cannot delete resource {}; doesn't exist!\n", res_name).as_bytes()));
     }
     Ok(())
 }
 
 fn read(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
-    try!(cli_out.write_all(format!("Called read function.\n").as_bytes()));
+    trace!("Called read function.\n");
     if args.len() != 1 {
         try!(cli_out.write_all(format!("Incorrect number of args: read res_name\n").as_bytes()));
         return Ok(());
@@ -58,7 +75,7 @@ fn read(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
     if let Some((rchan, mut tosend)) = {
         let mut appstate = get_appstate();
         if let Some(raystate) = appstate.files.get_mut(res_name) {
-            try!(cli_out.write_all(format!("Attempting to read the resource:\n").as_bytes()));
+            try!(cli_out.write_all(format!("Attempting to read the resource {}:\n", res_name).as_bytes()));
             Some(raystate.request())
         } else {
             try!(cli_out.write_all(format!("Cannot read resource {}; doesn't exist!\n", res_name).as_bytes()));
@@ -93,7 +110,7 @@ fn read(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
 }
 
 fn append(args: Vec<&str>, cli_out: &mut net::TcpStream) -> io::Result<()> {
-    try!(cli_out.write_all(format!("Called append function.\n").as_bytes()));
+    trace!("Called append function.\n");
     if args.len() != 2 {
         try!(cli_out.write_all(format!("Incorrect number of args: append res_name data\n").as_bytes()));
         return Ok(());
